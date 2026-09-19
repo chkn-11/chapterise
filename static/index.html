@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chapterise — pause, listen, mark</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><span class="eyebrow">LOCAL AUDIO WORKSHOP</span><h1>Chapterise<span>.</span></h1>
+      <p>Find the pauses. Listen for a new chapter. Keep the breaks that belong.</p></header>
+    <section class="player">
+      <div class="fileline"><h2 id="filename">Loading audio…</h2><span id="duration"></span></div>
+      <audio id="audio" controls preload="metadata" src="audio"></audio>
+      <p id="playback-help">Preview plays from 8 seconds before a marker to 8 seconds after it.</p>
+    </section>
+    <section>
+      <h2><span class="step">01</span> Find possible breaks</h2>
+      <fieldset id="settings"><div class="settings">
+        <label>Minimum pause (seconds)<input id="minimum" type="number" min="0.1" max="120" step="0.1" value="2"></label>
+        <label>Silence threshold (dB)<input id="noise" type="number" min="-90" max="-5" value="-35"></label>
+        <label>Suggested chapter spacing (seconds)<input id="spacing" type="number" min="0" max="86400" value="60"></label>
+      </div><p class="hint">A threshold nearer zero detects quieter speech as silence. Spacing selects likely breaks; shorter gaps remain available to review.</p>
+      <button id="scan" class="primary">Scan for pauses</button></fieldset>
+      <progress id="progress" max="100" value="0" hidden></progress>
+      <p id="status" role="status" aria-live="polite">Ready to scan. Your audio stays on this computer.</p>
+    </section>
+    <section>
+      <div class="fileline"><h2><span class="step">02</span> Review your chapters</h2><span id="count"></span></div>
+      <p class="hint">Check the markers to include. Slide each marker up to 15 seconds before or after its original position, then Preview to listen. Use the arrow keys for millisecond adjustments, or type a start time as HH:MM:SS.mmm or seconds. Sliders stop at the audio boundaries; the first chapter stays at zero. Scanning again replaces unsaved edits.</p>
+      <fieldset id="review">
+      <form id="manual-form" class="manual-editor">
+        <h3>Add a missing chapter</h3>
+        <p class="hint">Seek with the audio player, then use its playback position, or enter an exact time. Use “Insert after…” beside a marker to start looking in the gap after it.</p>
+        <div class="manual-fields">
+          <label>New chapter start<input id="manual-time" type="text" placeholder="HH:MM:SS.mmm or seconds" autocomplete="off" required></label>
+          <label>Chapter title (optional)<input id="manual-title" type="text" maxlength="500" placeholder="Automatic chapter number"></label>
+        </div>
+        <div class="toolbar">
+          <button id="use-playhead" type="button">Use playback position</button>
+          <button id="preview-manual" type="button">Preview this time</button>
+          <button id="add" type="submit" class="primary">Add chapter break</button>
+        </div>
+        <p id="manual-status" class="hint" role="status" aria-live="polite">New markers are inserted in time order and can be adjusted with the same ±15-second sliders.</p>
+      </form>
+      <div class="toolbar">
+        <button id="select">Select all</button><button id="clear">Clear optional markers</button>
+        <button id="save">Save review JSON</button><label class="import">Load review JSON<input id="load" type="file" accept=".json,application/json"></label>
+      </div>
+      <div class="tablewrap"><table><thead><tr><th>Keep</th><th>Start</th><th>Chapter title</th><th>Source</th><th>Listen</th></tr></thead><tbody id="rows"></tbody></table></div>
+      </fieldset>
+    </section>
+    <section class="export">
+      <h2><span class="step">03</span> Approve &amp; export</h2>
+      <p>Write the selected chapters into a new file. The original stays untouched.</p>
+      <p class="hint">Existing chapter metadata in the new file will be replaced by this selection.</p>
+      <code id="output"></code>
+      <label class="approval"><input id="approved" type="checkbox"> I have reviewed and approve these chapter markers and titles.</label>
+      <button id="export" class="primary" disabled>Export approved chapters</button>
+    </section>
+    <footer>Pause detection is a suggestion, not a guarantee of a chapter break. No account, API key, or cloud upload.</footer>
+  </main>
+</body>
+</html>
