@@ -1,6 +1,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
-let rows = [], state, busy = false, previewEnd = null, highlightedRow = null;
+let rows = [], state, busy = false, previewEnd = null, highlightedRow = null, removedRow = null;
+let transcript = null;
 const audio = $("audio");
 
 function timestamp(seconds) {
@@ -37,9 +38,53 @@ function manualTime() {
 function updateControls() {
   $("settings").disabled = busy;
   $("review").disabled = busy;
+  $("transcription-settings").disabled = busy;
   $("approved").disabled = busy;
   $("export").disabled = busy || !$("approved").checked;
   $("count").textContent = `${rows.filter(r => r.selected).length} chapters selected`;
+  $("undo-remove").hidden = removedRow === null;
+}
+function updateSnippet(row, element) {
+  if (!transcript) {
+    element.textContent = "Generate a transcript to see speech near this marker.";
+    return;
+  }
+  const nearby = transcript.segments.filter(s => s.end > Math.max(0, row.start - 8) && s.start < row.start + 8);
+  element.textContent = nearby.length ? nearby.map(s => s.text).join(" ") : "No speech recognized near this marker.";
+}
+function renderTranscript() {
+  $("transcript-panel").hidden = transcript === null;
+  if (!transcript) return;
+  const query = $("transcript-query").value.trim().toLocaleLowerCase();
+  const matches = transcript.segments.filter(s => s.text.toLocaleLowerCase().includes(query));
+  $("transcript-count").textContent = `${matches.length} ${query ? "matching" : "transcribed"} passages${matches.length > 100 ? "; showing the first 100 — narrow your search for more" : ""}`;
+  const fragment = document.createDocumentFragment();
+  matches.slice(0, 100).forEach(segment => {
+    const result = document.createElement("button"); result.className = "transcript-result";
+    const time = document.createElement("span"); time.textContent = timestamp(segment.start);
+    const text = document.createElement("span"); text.textContent = segment.text;
+    result.append(time, text);
+    result.onclick = async () => {
+      if (!busy) {
+        $("manual-time").value = timestamp(segment.start);
+        manualMessage("Transcript position selected. Listen and adjust it, then add a chapter break if needed.");
+      }
+      previewEnd = Math.min(state.duration, segment.end + .5);
+      audio.currentTime = Math.max(0, segment.start - .5);
+      try { await audio.play(); } catch (error) { message(`Playback unavailable: ${error.message}`, true); }
+    };
+    fragment.append(result);
+  });
+  $("transcript-results").replaceChildren(fragment);
+}
+function validateTranscript(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || !Array.isArray(value.segments) || value.segments.length > 200000) throw Error("Invalid saved transcript.");
+  for (const segment of value.segments) {
+    if (!segment || !Number.isFinite(segment.start) || !Number.isFinite(segment.end) || segment.start < 0 || segment.end > state.duration + .001 || segment.end <= segment.start || typeof segment.text !== "string" || segment.text.length > 10000) throw Error("Invalid passage in saved transcript.");
+  }
+  value.segments.sort((a,b) => a.start-b.start);
+  return value;
 }
 function render() {
   const fragment = document.createDocumentFragment();
@@ -52,6 +97,7 @@ function render() {
     tr.classList.toggle("unselected", !row.selected);
     tr.classList.toggle("new-marker", row === highlightedRow);
     const cells = Array.from({length: 5}, () => tr.appendChild(document.createElement("td")));
+    const snippet = document.createElement("p"); snippet.className = "snippet";
     const keep = document.createElement("input");
     keep.type = "checkbox"; keep.checked = row.selected; keep.disabled = row.start === 0;
     keep.setAttribute("aria-label", `Include marker at ${timestamp(row.start)}`);
@@ -86,6 +132,7 @@ function render() {
       offset.textContent = fixed ? "Fixed at beginning" : `${signed} from original${Math.abs(delta) > 15000 ? " (outside slider range)" : ""}`;
       slider.setAttribute("aria-valuetext", `${signed}; chapter starts at ${timestamp(row.start)}`);
       start.value = timestamp(row.start);
+      updateSnippet(row, snippet);
     }
     slider.oninput = () => {
       const nextMs = anchorMs + Number(slider.value);
@@ -113,7 +160,7 @@ function render() {
     title.value = row.title; title.placeholder = row.selected ? `Chapter ${chapterNumber}` : "Chapter title";
     title.maxLength = 500; title.setAttribute("aria-label", "Chapter title");
     title.oninput = () => { row.title = title.value; invalidate(); };
-    cells[2].append(title);
+    cells[2].append(title, snippet);
     cells[3].textContent = row.kind === "pause" ? `${Number(row.pause).toFixed(1)}s pause` : row.kind === "existing" ? "Existing chapter" : row.kind === "start" ? "Beginning" : "Manual marker";
     const listen = document.createElement("button"); listen.textContent = "▶ Preview";
     listen.onclick = () => preview(row.start);
@@ -132,7 +179,16 @@ function render() {
       $("manual-form").scrollIntoView({block: "nearest"});
     };
     cells[4].className = "marker-actions";
-    cells[4].append(listen, insert); fragment.append(tr);
+    const remove = document.createElement("button"); remove.textContent = "Remove";
+    remove.className = "remove-marker"; remove.disabled = row.start === 0;
+    remove.setAttribute("aria-label", `Remove chapter marker at ${timestamp(row.start)}`);
+    remove.title = row.start === 0 ? "The opening chapter must stay at zero." : "Remove this marker; keep the audio.";
+    remove.onclick = () => {
+      removedRow = row; rows = rows.filter(other => other !== row);
+      invalidate(); render();
+      message(`Removed the chapter marker at ${timestamp(row.start)}. Audio is unchanged. Use Undo removal to restore it.`);
+    };
+    cells[4].append(listen, insert, remove); fragment.append(tr);
   });
   $("rows").replaceChildren(fragment); updateControls();
 }
@@ -155,16 +211,20 @@ async function poll() {
     state = await api("state");
     $("progress").value = state.job.progress;
     if (state.job.status === "running") {
-      message(`Working… ${state.job.progress}%`);
+      message(`${state.job.detail || "Working…"} ${state.job.progress}%`);
       setTimeout(poll, 700); return;
     }
     busy = false; $("progress").hidden = true;
     if (state.job.status === "error") message(state.job.error, true);
     else if (state.job.result?.operation === "scan") {
-      rows = state.rows; render();
+      rows = state.rows; removedRow = null; render();
       message(`Found ${state.job.result.count} candidate pauses. Listen and adjust the selected markers before approving.`);
     } else if (state.job.result?.operation === "export") {
       message(`Export complete: ${state.job.result.path}`); invalidate();
+    } else if (state.job.result?.operation === "transcribe") {
+      transcript = validateTranscript(await api("transcript"));
+      render(); renderTranscript();
+      message(`Transcript ready: ${transcript.segments.length} passages. Search the audio or read the text beside each marker.`);
     }
     updateControls();
   } catch (error) {
@@ -178,7 +238,7 @@ async function startJob(path, body) {
   try {
     await api(path, body);
     $("progress").hidden = false; $("progress").value = 0;
-    message(path === "scan" ? "Scanning the audio for pauses…" : "Writing and verifying approved chapters…");
+    message(path === "scan" ? "Scanning the audio for pauses…" : path === "transcribe" ? "Preparing local speech recognition…" : "Writing and verifying approved chapters…");
     setTimeout(poll, 500);
   } catch (error) { busy = false; updateControls(); message(error.message, true); }
 }
@@ -187,6 +247,8 @@ $("scan").onclick = () => {
   startJob("scan", {minimum: Number($("minimum").value), noise: Number($("noise").value), spacing: Number($("spacing").value)});
 };
 $("approved").onchange = updateControls;
+$("transcribe").onclick = () => startJob("transcribe", {model: $("speech-model").value, language: $("speech-language").value.trim().toLowerCase() || null});
+$("transcript-query").oninput = renderTranscript;
 $("export").onclick = () => {
   const chapters = rows.filter(r => r.selected).map((r, i) => ({start: r.start, title: r.title.trim() || `Chapter ${i+1}`}));
   startJob("export", {approved: $("approved").checked, chapters});
@@ -219,16 +281,24 @@ $("manual-form").onsubmit = event => {
   } catch (error) { manualMessage(error.message, true); }
 };
 $("select").onclick = () => { rows.forEach(r => r.selected = true); invalidate(); render(); };
+$("undo-remove").onclick = () => {
+  if (!removedRow) return;
+  if (rows.some(r => Math.round(r.start * 1000) === Math.round(removedRow.start * 1000))) {
+    message("Another marker now occupies that time. Move or remove it before restoring this marker.", true); return;
+  }
+  rows.push(removedRow); rows.sort((a,b) => a.start-b.start); removedRow = null;
+  invalidate(); render(); message("Removed chapter marker restored. Review and approve the updated list.");
+};
 $("clear").onclick = () => { rows.forEach(r => r.selected = r.start === 0); invalidate(); render(); };
 $("save").onclick = () => {
-  const blob = new Blob([JSON.stringify({version: 1, filename: state.filename, duration: state.duration, rows}, null, 2)], {type: "application/json"});
+  const blob = new Blob([JSON.stringify({version: 1, filename: state.filename, duration: state.duration, rows, transcript}, null, 2)], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${state.filename}.review.json`; link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 };
 $("load").onchange = async event => {
   try {
     const file = event.target.files[0]; if (!file) return;
-    if (file.size > 2_000_000) throw Error("Review file is too large.");
+    if (file.size > 20_000_000) throw Error("Review file is too large (maximum 20 MB).");
     const data = JSON.parse(await file.text());
     if (data.version !== 1 || data.filename !== state.filename || !Number.isFinite(data.duration) || Math.abs(data.duration - state.duration) > .01) throw Error("This review belongs to a different audio file.");
     if (!Array.isArray(data.rows) || !data.rows.length || data.rows.length > 10000) throw Error("Invalid review file.");
@@ -239,7 +309,9 @@ $("load").onchange = async event => {
     if (new Set(data.rows.map(r => Math.round(r.start * 1000))).size !== data.rows.length) throw Error("Review contains duplicate marker times.");
     data.rows.sort((a,b) => a.start-b.start);
     if (data.rows[0].start !== 0 || !data.rows[0].selected) throw Error("The opening chapter must be selected at zero.");
-    rows = data.rows; invalidate(); render(); message("Saved review loaded. Review and approve before exporting.");
+    const loadedTranscript = validateTranscript(data.transcript);
+    rows = data.rows; transcript = loadedTranscript; removedRow = null;
+    invalidate(); render(); renderTranscript(); message("Saved review loaded. Review and approve before exporting.");
   } catch (error) { message(error.message, true); }
   event.target.value = "";
 };
@@ -247,6 +319,10 @@ async function init() {
   try {
     state = await api("state"); rows = state.rows;
     $("filename").textContent = state.filename; $("duration").textContent = timestamp(state.duration);
+    $("transcription-help").textContent = state.transcription_available ? "Speech recognition is available. Long recordings may take a while; you can choose a smaller model for speed." : "To enable transcription, follow Transcription setup in README.md and restart the app in that environment. Existing saved transcripts can still be loaded and searched.";
+    $("transcribe").disabled = !state.transcription_available;
+    if (state.transcript_ready) transcript = validateTranscript(await api("transcript"));
+    renderTranscript();
     $("output").textContent = state.output; render();
     if (state.job.status === "running") { busy = true; updateControls(); $("progress").hidden = false; poll(); }
     else if (state.job.status === "done" || state.job.status === "error") poll();

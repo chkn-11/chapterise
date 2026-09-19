@@ -12,8 +12,11 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
+
+from transcription import transcribe_audio, validate_options
 
 
 STATIC = Path(__file__).parent / "static"
@@ -115,6 +118,28 @@ def escape_metadata(value):
     return re.sub(r"([\\=;#])", r"\\\1", value)
 
 
+def verify_chapters(actual, expected, duration):
+    """Reject changed chapter metadata and identify the first mismatch."""
+    def fail(detail):
+        raise ValueError(f"Chapter verification failed: {detail} Output was not published.")
+
+    if len(actual) != len(expected):
+        fail(f"Expected {len(expected)} chapters, found {len(actual)}.")
+    for index, (written, approved) in enumerate(zip(actual, expected)):
+        for field, target in (
+            ("start", approved["start"]),
+            ("end", expected[index + 1]["start"] if index + 1 < len(expected) else round(duration * 1000)),
+        ):
+            try:
+                value = float(written[f"{field}_time"]) * 1000
+            except (KeyError, TypeError, ValueError):
+                fail(f"Chapter {index + 1} has no valid {field} time.")
+            if not math.isfinite(value) or abs(value - target) > 2:
+                fail(f"Chapter {index + 1} {field} is {value / 1000:.3f}s; expected {target / 1000:.3f}s.")
+        if written.get("tags", {}).get("title") != approved["title"]:
+            fail(f"Chapter {index + 1} title differs from the approved title.")
+
+
 def write_chapters(source, output, chapters, duration):
     """Copy encoded audio and artwork, replace chapters, never overwrite files."""
     source, output = Path(source).resolve(), Path(output).absolute()
@@ -140,15 +165,12 @@ def write_chapters(source, output, chapters, duration):
             if stream.get("disposition", {}).get("attached_pic"):
                 command.extend(["-map", f"0:{stream['index']}"])
         command.extend(["-map_metadata", "0", "-map_chapters", "1", "-c", "copy",
-                        "-movflags", "+faststart", "-f", "mp4", str(temp)])
+                        # FFmpeg's automatic movie timescale can overflow chapter
+                        # sample durations on long books. Match our 1 ms metadata.
+                        "-movie_timescale", "1000", "-movflags", "+faststart", "-f", "mp4", str(temp)])
         run(command)
         actual = probe(temp).get("chapters", [])
-        if len(actual) != len(checked) or any(
-            abs(float(a["start_time"]) * 1000 - b["start"]) > 2
-            or a.get("tags", {}).get("title") != b["title"]
-            for a, b in zip(actual, checked)
-        ):
-            raise ValueError("Chapter verification failed; output was not published.")
+        verify_chapters(actual, checked, duration)
         # Exclusive create also protects against files created during the export.
         created = False
         try:
@@ -170,6 +192,7 @@ class Session:
         self.fingerprint = self.signature()
         self.lock = threading.Lock()
         self.job = {"status": "idle", "progress": 0}
+        self.transcript = None
         self.rows = [{"start": float(c["start_time"]), "title": c.get("tags", {}).get("title", ""),
                       "selected": True, "kind": "existing", "pause": None}
                      for c in self.info.get("chapters", [])]
@@ -188,7 +211,20 @@ class Session:
     def state(self):
         with self.lock:
             return {"filename": self.source.name, "duration": self.duration,
-                    "output": str(self.output), "rows": self.rows, "job": self.job.copy()}
+                    "output": str(self.output), "rows": self.rows, "job": self.job.copy(),
+                    "transcription_available": importlib.util.find_spec("faster_whisper") is not None,
+                    "transcript_ready": self.transcript is not None}
+
+    def transcribe(self, settings):
+        def progress(value, detail):
+            with self.lock:
+                self.job.update(progress=value, detail=detail)
+        transcript = transcribe_audio(self.source, self.duration, settings.get("model", "base"),
+                                      settings.get("language") or None, progress)
+        self.unchanged()
+        with self.lock:
+            self.transcript = transcript
+        return {"operation": "transcribe", "count": len(transcript["segments"])}
 
     def start_job(self, operation):
         with self.lock:
@@ -261,6 +297,10 @@ def handler_for(session, token):
             try:
                 if route == "api/state":
                     self.json(session.state())
+                elif route == "api/transcript":
+                    with session.lock:
+                        transcript = session.transcript
+                    self.json(transcript)
                 elif route == "audio":
                     self.audio()
                 elif route in {"", "app.js", "style.css"}:
@@ -336,6 +376,9 @@ def handler_for(session, token):
                     number(body.get("minimum", 2), "Minimum pause", 0.1, 120)
                     number(body.get("spacing", 60), "Minimum chapter length", 0, 86400)
                     session.start_job(lambda: session.scan(body))
+                elif route == "api/transcribe":
+                    validate_options(body.get("model", "base"), body.get("language") or None)
+                    session.start_job(lambda: session.transcribe(body))
                 elif route == "api/export":
                     if body.get("approved") is not True:
                         raise ValueError("Review and approve the chapter list first.")

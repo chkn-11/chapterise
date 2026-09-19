@@ -11,13 +11,28 @@ import threading
 import time
 import unittest
 import wave
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import (Session, ThreadingHTTPServer, detect_pauses, handler_for, probe,
-                 run, validate_chapters, write_chapters)
+                 run, validate_chapters, verify_chapters, write_chapters)
 
 
 class ValidationTests(unittest.TestCase):
+    def test_verification_reports_specific_mismatches(self):
+        expected = [{"start": 0, "title": "Intro"}]
+        valid = {"start_time": "0", "end_time": "10", "tags": {"title": "Intro"}}
+        verify_chapters([valid], expected, 10)
+        cases = [([], "Expected 1 chapters, found 0"),
+                 ([{**valid, "start_time": "0.100"}], "Chapter 1 start"),
+                 ([{**valid, "end_time": "9.500"}], "Chapter 1 end"),
+                 ([{**valid, "start_time": "nan"}], "Chapter 1 start"),
+                 ([{**valid, "start_time": None}], "no valid start time"),
+                 ([{**valid, "tags": {"title": "Wrong"}}], "Chapter 1 title")]
+        for actual, detail in cases:
+            with self.subTest(detail=detail), self.assertRaisesRegex(ValueError, detail):
+                verify_chapters(actual, expected, 10)
+
     def test_reject_invalid_boundaries_and_titles(self):
         invalid = [[], [{"start": 1, "title": "Missing beginning"}],
                    [{"start": float("nan"), "title": "NaN"}],
@@ -98,6 +113,31 @@ class AudioTests(unittest.TestCase):
         write_chapters(output, revised, [{"start": 0, "title": "One chapter"}], self.duration)
         self.assertEqual(len(probe(revised)["chapters"]), 1)
         self.assertEqual(encoded_audio_hash(output), encoded_audio_hash(revised))
+
+    def test_long_book_chapters_keep_millisecond_timestamps(self):
+        # A short audio fixture keeps this fast while the chapter track spans 37h.
+        # Multi-hour chapter samples overflow with FFmpeg 9's automatic timescale.
+        duration = 133752.976
+        chapters = [{"start": 0, "title": "Opening"},
+                    {"start": 138.629, "title": "Prelude"},
+                    {"start": 28321.590, "title": "Part two"},
+                    {"start": 61273.282, "title": "Part three"},
+                    {"start": 133514.770, "title": "Closing"}]
+        output = self.directory / "long-book.m4b"
+        write_chapters(self.source, output, chapters, duration)
+        actual = probe(output)["chapters"]
+        self.assertEqual(len(actual), len(chapters))
+        for index, (written, approved) in enumerate(zip(actual, chapters)):
+            self.assertAlmostEqual(float(written["start_time"]), approved["start"], places=3)
+            end = chapters[index + 1]["start"] if index + 1 < len(chapters) else duration
+            self.assertAlmostEqual(float(written["end_time"]), end, places=3)
+            self.assertEqual(written["tags"]["title"], approved["title"])
+
+    def test_verification_failure_does_not_publish_output(self):
+        output = self.directory / "failed-verification.m4a"
+        with patch("app.verify_chapters", side_effect=ValueError("Chapter verification failed")), self.assertRaisesRegex(ValueError, "Chapter verification failed"):
+            write_chapters(self.source, output, [{"start": 0, "title": "Opening"}], self.duration)
+        self.assertFalse(output.exists())
 
     def test_http_preview_and_approval(self):
         output = self.directory / "http-approved.m4a"
