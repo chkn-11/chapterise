@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 let rows = [], state, busy = false, previewEnd = null, highlightedRow = null, removedRow = null;
 let transcript = null;
 const audio = $("audio");
+const PREVIEW_SECONDS = 10;
 
 function timestamp(seconds) {
   const ms = Math.round(seconds * 1000);
@@ -22,8 +23,8 @@ function message(text, error = false) {
 }
 function invalidate() { $("approved").checked = false; updateControls(); }
 async function preview(start) {
-  previewEnd = Math.min(state.duration, start + 8);
-  audio.currentTime = Math.max(0, start - 8);
+  previewEnd = Math.min(state.duration, start + PREVIEW_SECONDS);
+  audio.currentTime = start;
   try { await audio.play(); } catch (error) { message(`Playback unavailable: ${error.message}`, true); }
 }
 function manualMessage(text, error = false) {
@@ -49,7 +50,7 @@ function updateSnippet(row, element) {
     element.textContent = "Generate a transcript to see speech near this marker.";
     return;
   }
-  const nearby = transcript.segments.filter(s => s.end > Math.max(0, row.start - 8) && s.start < row.start + 8);
+  const nearby = transcript.segments.filter(s => s.end > row.start && s.start < Math.min(state.duration, row.start + PREVIEW_SECONDS));
   element.textContent = nearby.length ? nearby.map(s => s.text).join(" ") : "No speech recognized near this marker.";
 }
 function renderTranscript() {
@@ -69,9 +70,7 @@ function renderTranscript() {
         $("manual-time").value = timestamp(segment.start);
         manualMessage("Transcript position selected. Listen and adjust it, then add a chapter break if needed.");
       }
-      previewEnd = Math.min(state.duration, segment.end + .5);
-      audio.currentTime = Math.max(0, segment.start - .5);
-      try { await audio.play(); } catch (error) { message(`Playback unavailable: ${error.message}`, true); }
+      await preview(segment.start);
     };
     fragment.append(result);
   });
