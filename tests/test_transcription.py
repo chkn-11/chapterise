@@ -1,4 +1,5 @@
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -9,6 +10,31 @@ from transcription import transcribe_audio, validate_options
 
 
 class TranscriptionTests(unittest.TestCase):
+    def test_resume_skips_completed_chunks_and_changed_options_invalidate_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'book.m4b'
+            source.write_bytes(b'fixture')
+            cache = Path(directory) / 'chunks'
+            recognizer = Mock()
+            segment = SimpleNamespace(start=1, end=3, text='Speech', words=[SimpleNamespace(word='Speech', start=1.2, end=2.8)])
+            recognizer.transcribe.side_effect = [(iter([segment]), SimpleNamespace(language='en')), RuntimeError('interrupted')]
+            factory = Mock(return_value=recognizer)
+            with patch.dict(sys.modules, {'faster_whisper': SimpleNamespace(WhisperModel=factory)}), patch('transcription.subprocess.run', return_value=SimpleNamespace(returncode=0)):
+                with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                    transcribe_audio(source, 310, checkpoint_dir=cache, word_timestamps=True)
+                recognizer.transcribe.side_effect = [(iter([segment]), SimpleNamespace(language='en'))]
+                resumed = transcribe_audio(source, 310, checkpoint_dir=cache, word_timestamps=True)
+                self.assertEqual([s['words'][0]['start'] for s in resumed['segments']], [1.2, 301.2])
+                # A fully cached run needs no recognizer, decoding, or model download.
+                factory.reset_mock()
+                self.assertEqual(transcribe_audio(source, 310, checkpoint_dir=cache, word_timestamps=True), resumed)
+                factory.assert_not_called()
+                recognizer.transcribe.side_effect = [(iter([segment]), SimpleNamespace(language='en'))] * 2
+                transcribe_audio(source, 310, model='tiny', checkpoint_dir=cache, word_timestamps=True)
+                factory.assert_called_once()
+                with self.assertRaisesRegex(InterruptedError, 'Paused'):
+                    transcribe_audio(source, 310, checkpoint_dir=cache, cancelled=lambda: True)
+
     def test_invalid_options(self):
         for model, language in [("../custom", None), ([], None), ("base", "English"), ("tiny", 5)]:
             with self.subTest(model=model, language=language), self.assertRaises(ValueError):

@@ -2,6 +2,7 @@
 const $ = id => document.getElementById(id);
 let rows = [], state, busy = false, previewEnd = null, highlightedRow = null, removedRow = null;
 let transcript = null;
+let omittedSections = [];
 const audio = $("audio");
 const PREVIEW_SECONDS = 10;
 
@@ -21,7 +22,7 @@ function message(text, error = false) {
   $("status").textContent = text;
   $("status").classList.toggle("error", error);
 }
-function invalidate() { $("approved").checked = false; updateControls(); }
+function invalidate() { $("approved").checked = false; updateControls(); queueSave(); }
 async function preview(start) {
   previewEnd = Math.min(state.duration, start + PREVIEW_SECONDS);
   audio.currentTime = start;
@@ -37,11 +38,16 @@ function manualTime() {
   return ms / 1000;
 }
 function updateControls() {
-  $("settings").disabled = busy;
-  $("review").disabled = busy;
-  $("transcription-settings").disabled = busy;
+  const unloaded = !state?.filename;
+  $("project-controls").disabled = busy;
+  $("epub-upload").disabled = unloaded;
+  $("settings").disabled = busy || unloaded;
+  $("review").disabled = busy || unloaded;
+  $("transcription-settings").disabled = busy || unloaded;
+  $("align").disabled = busy || unloaded || !book || (!transcript && !state.transcription_available);
+  $("pause-job").hidden = !busy || !state?.job?.cancellable;
   $("approved").disabled = busy;
-  $("export").disabled = busy || !$("approved").checked;
+  $("export").disabled = busy || unloaded || !$("approved").checked;
   $("count").textContent = `${rows.filter(r => r.selected).length} chapters selected`;
   $("undo-remove").hidden = removedRow === null;
 }
@@ -160,7 +166,7 @@ function render() {
     title.maxLength = 500; title.setAttribute("aria-label", "Chapter title");
     title.oninput = () => { row.title = title.value; invalidate(); };
     cells[2].append(title, snippet);
-    cells[3].textContent = row.kind === "pause" ? `${Number(row.pause).toFixed(1)}s pause` : row.kind === "existing" ? "Existing chapter" : row.kind === "start" ? "Beginning" : "Manual marker";
+    cells[3].textContent = row.kind === "pause" ? `${Number(row.pause).toFixed(1)}s pause` : row.kind === "existing" ? "Existing chapter" : row.kind === "start" ? "Beginning" : row.kind === "epub" ? "EPUB match" : "Manual marker";
     const listen = document.createElement("button"); listen.textContent = "▶ Preview";
     listen.onclick = () => preview(row.start);
     const insert = document.createElement("button"); insert.textContent = "Insert after…";
@@ -184,7 +190,7 @@ function render() {
     remove.title = row.start === 0 ? "The opening chapter must stay at zero." : "Remove this marker; keep the audio.";
     remove.onclick = () => {
       removedRow = row; rows = rows.filter(other => other !== row);
-      invalidate(); render();
+      invalidate(); render(); renderProposals();
       message(`Removed the chapter marker at ${timestamp(row.start)}. Audio is unchanged. Use Undo removal to restore it.`);
     };
     cells[4].append(listen, insert, remove); fragment.append(tr);
@@ -220,12 +226,18 @@ async function poll() {
       message(`Found ${state.job.result.count} candidate pauses. Listen and adjust the selected markers before approving.`);
     } else if (state.job.result?.operation === "export") {
       message(`Export complete: ${state.job.result.path}`); invalidate();
+      $("download-export").hidden = false;
     } else if (state.job.result?.operation === "transcribe") {
       transcript = validateTranscript(await api("transcript"));
-      render(); renderTranscript();
+      await loadAlignment(); render(); renderTranscript();
       message(`Transcript ready: ${transcript.segments.length} passages. Search the audio or read the text beside each marker.`);
     }
-    updateControls();
+    if (state.job.result?.operation === "align") {
+      transcript = validateTranscript(await api("transcript"));
+      await loadAlignment(); render(); renderTranscript();
+      message("EPUB matching finished. Listen to the evidence and accept proposed markers into your review.");
+    }
+    updateControls(); renderProposals();
   } catch (error) {
     // A lost connection does not imply that the background export stopped.
     message(`Connection interrupted; retrying… ${error.message}`, true);
@@ -233,13 +245,16 @@ async function poll() {
   }
 }
 async function startJob(path, body) {
-  busy = true; updateControls();
+  if (busy) return;
   try {
+    busy = true; state.job.cancellable = ["transcribe", "align"].includes(path);
+    updateControls(); renderProposals();
+    await persistReview();
     await api(path, body);
     $("progress").hidden = false; $("progress").value = 0;
-    message(path === "scan" ? "Scanning the audio for pauses…" : path === "transcribe" ? "Preparing local speech recognition…" : "Writing and verifying approved chapters…");
+    message(path === "scan" ? "Scanning the audio for pauses…" : path === "transcribe" || path === "align" ? "Preparing local speech recognition and matching…" : "Writing and verifying approved chapters…");
     setTimeout(poll, 500);
-  } catch (error) { busy = false; updateControls(); message(error.message, true); }
+  } catch (error) { busy = false; updateControls(); renderProposals(); message(error.message, true); }
 }
 $("scan").onclick = () => {
   invalidate();
@@ -286,45 +301,199 @@ $("undo-remove").onclick = () => {
     message("Another marker now occupies that time. Move or remove it before restoring this marker.", true); return;
   }
   rows.push(removedRow); rows.sort((a,b) => a.start-b.start); removedRow = null;
-  invalidate(); render(); message("Removed chapter marker restored. Review and approve the updated list.");
+  invalidate(); render(); renderProposals(); message("Removed chapter marker restored. Review and approve the updated list.");
 };
 $("clear").onclick = () => { rows.forEach(r => r.selected = r.start === 0); invalidate(); render(); };
 $("save").onclick = () => {
-  const blob = new Blob([JSON.stringify({version: 1, filename: state.filename, duration: state.duration, rows, transcript}, null, 2)], {type: "application/json"});
+  const blob = new Blob([JSON.stringify({version: 1, filename: state.filename, duration: state.duration, rows, transcript, omitted_sections: omittedSections}, null, 2)], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${state.filename}.review.json`; link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 };
 $("load").onchange = async event => {
   try {
     const file = event.target.files[0]; if (!file) return;
-    if (file.size > 20_000_000) throw Error("Review file is too large (maximum 20 MB).");
+    if (file.size > 100_000_000) throw Error("Review file is too large (maximum 100 MB).");
     const data = JSON.parse(await file.text());
     if (data.version !== 1 || data.filename !== state.filename || !Number.isFinite(data.duration) || Math.abs(data.duration - state.duration) > .01) throw Error("This review belongs to a different audio file.");
     if (!Array.isArray(data.rows) || !data.rows.length || data.rows.length > 10000) throw Error("Invalid review file.");
     for (const row of data.rows) {
-      if (!row || !Number.isFinite(row.start) || row.start < 0 || row.start >= state.duration || typeof row.title !== "string" || row.title.length > 500 || typeof row.selected !== "boolean" || !["start","pause","existing","manual"].includes(row.kind)) throw Error("Invalid chapter in review file.");
+      if (!row || !Number.isFinite(row.start) || row.start < 0 || row.start >= state.duration || typeof row.title !== "string" || row.title.length > 500 || typeof row.selected !== "boolean" || !["start","pause","existing","manual","epub"].includes(row.kind)) throw Error("Invalid chapter in review file.");
       if (row.originalStart !== undefined && (!Number.isFinite(row.originalStart) || row.originalStart < 0 || row.originalStart >= state.duration)) throw Error("Invalid original marker time in review file.");
     }
     if (new Set(data.rows.map(r => Math.round(r.start * 1000))).size !== data.rows.length) throw Error("Review contains duplicate marker times.");
     data.rows.sort((a,b) => a.start-b.start);
     if (data.rows[0].start !== 0 || !data.rows[0].selected) throw Error("The opening chapter must be selected at zero.");
     const loadedTranscript = validateTranscript(data.transcript);
+    const omitted = data.omitted_sections ?? [];
+    if (!Array.isArray(omitted) || omitted.length > 2000 || omitted.some(id => typeof id !== "string" || id.length > 100)) throw Error("Invalid omitted section list.");
+    omittedSections = omitted;
     rows = data.rows; transcript = loadedTranscript; removedRow = null;
-    invalidate(); render(); renderTranscript(); message("Saved review loaded. Review and approve before exporting.");
+    invalidate(); render(); renderTranscript(); await persistReview({transcript}); await loadAlignment(); message("Saved review loaded. Review and approve before exporting.");
   } catch (error) { message(error.message, true); }
   event.target.value = "";
 };
 async function init() {
   try {
-    state = await api("state"); rows = state.rows;
-    $("filename").textContent = state.filename; $("duration").textContent = timestamp(state.duration);
+    state = await api("state"); rows = state.rows; omittedSections = state.omitted_sections || [];
+    $("filename").textContent = state.filename || "Choose an audiobook to begin";
+    $("duration").textContent = state.filename ? timestamp(state.duration) : "";
+    if (state.filename) { audio.src = "audio"; audio.load(); } else audio.removeAttribute("src");
+    $("download-export").hidden = true;
+    await loadAlignment(); await refreshProjects();
     $("transcription-help").textContent = state.transcription_available ? "Speech recognition is available. Long recordings may take a while; you can choose a smaller model for speed." : "To enable transcription, follow Transcription setup in README.md and restart the app in that environment. Existing saved transcripts can still be loaded and searched.";
     $("transcribe").disabled = !state.transcription_available;
     if (state.transcript_ready) transcript = validateTranscript(await api("transcript"));
+    else transcript = null;
     renderTranscript();
-    $("output").textContent = state.output; render();
+    $("output").textContent = state.output; render(); updateControls();
     if (state.job.status === "running") { busy = true; updateControls(); $("progress").hidden = false; poll(); }
     else if (state.job.status === "done" || state.job.status === "error") poll();
+    if (state.notice) message(state.notice, true);
   } catch (error) { message(error.message, true); $("settings").disabled = true; $("review").disabled = true; }
 }
+let alignment = null, book = null;
+let saveTimer = null, saveRevision = 0, savedRevision = 0, saveQueue = Promise.resolve();
+function queueSave() {
+  saveRevision++;
+  $("save-status").textContent = "Saving review…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { if (!busy) persistReview().catch(() => {}); }, 600);
+}
+async function persistReview(extra = {}) {
+  clearTimeout(saveTimer);
+  if (!state?.filename) return;
+  const version = saveRevision;
+  const snapshot = JSON.parse(JSON.stringify({rows, omitted_sections: omittedSections, project_id: state.project_id, ...extra}));
+  saveQueue = saveQueue.catch(() => {}).then(() => api("review", snapshot));
+  try {
+    await saveQueue;
+    savedRevision = Math.max(savedRevision, version);
+    $("save-status").textContent = "Review saved on this computer. Export approval is never saved.";
+    $("save-status").classList.remove("error");
+  } catch (error) {
+    $("save-status").textContent = `Could not save review: ${error.message}. Use Save review JSON as a backup.`;
+    $("save-status").classList.add("error");
+    throw error;
+  }
+}
+window.addEventListener("beforeunload", event => {
+  if (saveRevision > savedRevision) { event.preventDefault(); event.returnValue = ""; }
+});
+async function loadAlignment() {
+  const data = await api("alignment");
+  book = data.book; alignment = data.alignment;
+  $("book-status").textContent = book ? `${book.title} · ${book.chapters.length} contents entries. ${(book.warnings || []).join(" ")}` : "Upload a matching EPUB to locate its chapters in the audiobook.";
+  renderProposals(); updateControls();
+}
+function renderProposals() {
+  const fragment = document.createDocumentFragment();
+  const proposals = alignment?.proposals || [];
+  const epub = proposals.filter(p => p.source !== "audio");
+  $("alignment-summary").textContent = alignment ? `${epub.filter(p => p.start !== null).length} of ${epub.length} EPUB entries matched; ${proposals.length - epub.length} audio-only suggestions; ${epub.filter(p => omittedSections.includes(p.id)).length} marked not present. Listen before accepting.` : "";
+  proposals.forEach(proposal => {
+    const card = document.createElement("article"); card.className = "proposal";
+    const omitted = omittedSections.includes(proposal.id);
+    const title = document.createElement("h3"); title.textContent = proposal.title;
+    const confidence = document.createElement("span"); confidence.className = `confidence ${proposal.confidence}`;
+    confidence.textContent = `${proposal.confidence === "strong" ? "Strong opening match" : proposal.confidence === "review" ? "Needs review" : "Unmatched"}${proposal.start !== null ? ` · ${timestamp(proposal.start)}` : ""}`;
+    if (proposal.source === "audio") confidence.textContent = `Audio-only suggestion · ${confidence.textContent}`;
+    if (omitted) confidence.textContent = "Marked not present in this recording";
+    const reason = document.createElement("p"); reason.textContent = proposal.reason;
+    const evidence = document.createElement("div"); evidence.className = "evidence";
+    for (const [label, excerpt] of [["Book passage", proposal.book_excerpt], ["Recognized speech", proposal.audio_excerpt]]) {
+      const paragraph = document.createElement("p"), heading = document.createElement("strong");
+      heading.textContent = `${label}: `; paragraph.append(heading, document.createTextNode(excerpt || "No match found.")); evidence.append(paragraph);
+    }
+    const actions = document.createElement("div"); actions.className = "toolbar";
+    if (proposal.start !== null) {
+      const listen = document.createElement("button"); listen.textContent = "▶ Preview match";
+      listen.onclick = () => preview(proposal.start); actions.append(listen);
+      const accept = document.createElement("button");
+      const accepted = rows.some(r => r.epubId === proposal.id);
+      accept.textContent = accepted ? "Added to review" : "Use this marker"; accept.disabled = busy || accepted;
+      accept.onclick = () => {
+        const existing = rows.find(r => Math.round(r.start * 1000) === Math.round(proposal.start * 1000));
+        if (existing && existing.start !== 0) {
+          message("A marker already exists at this time. Adjust or remove it before using this proposal.", true); return;
+        }
+        if (existing) { existing.title = proposal.title; existing.epubId = proposal.id; }
+        else rows.push({start: proposal.start, originalStart: proposal.start, title: proposal.title, selected: true,
+                        kind: proposal.source === "audio" ? "manual" : "epub", pause: null, epubId: proposal.id, evidence: proposal.reason});
+        rows.sort((a,b) => a.start-b.start); invalidate(); render(); renderProposals();
+        message("Suggested marker added to your review. Adjust its timestamp if needed and approve the final list before export.");
+      };
+      actions.append(accept);
+    }
+    const locate = document.createElement("button"); locate.textContent = "Locate manually"; locate.disabled = busy || omitted;
+    locate.onclick = () => {
+      $("manual-title").value = proposal.title;
+      $("manual-time").value = timestamp(proposal.start ?? audio.currentTime);
+      manualMessage("Locate this EPUB chapter in the audio, then add the missing break.");
+      $("manual-time").focus(); $("manual-form").scrollIntoView({block: "nearest"});
+    };
+    actions.append(locate);
+    if (proposal.start === null && proposal.source !== "audio") {
+      const omit = document.createElement("button"); omit.className = "omit-section";
+      omit.textContent = omitted ? "Reconsider section" : "Mark not present in recording";
+      omit.disabled = busy;
+      omit.onclick = () => {
+        omittedSections = omitted ? omittedSections.filter(id => id !== proposal.id) : [...omittedSections, proposal.id];
+        invalidate(); renderProposals();
+      };
+      actions.append(omit);
+    }
+    card.append(title, confidence, reason, evidence, actions); fragment.append(card);
+  });
+  $("proposals").replaceChildren(fragment);
+}
+async function refreshProjects() {
+  const projects = await api("projects");
+  $("project-list").replaceChildren(new Option("Choose a saved project…", ""));
+  for (const project of projects) $("project-list").append(new Option(project.filename, project.id));
+  if (state?.project_id) $("project-list").value = state.project_id;
+}
+async function uploadFile(kind, file) {
+  if (!file || busy) return;
+  try {
+    busy = true; updateControls(); renderProposals(); audio.pause();
+    await persistReview();
+    $("upload-progress").hidden = false; $("upload-progress").value = 0;
+    message(`Uploading ${file.name} to this local app…`);
+    await new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest(); request.open("POST", `api/upload/${kind}`);
+      request.setRequestHeader("Content-Type", "application/octet-stream");
+      request.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+      request.upload.onprogress = event => { if (event.lengthComputable) $("upload-progress").value = event.loaded / event.total * 100; };
+      request.onerror = () => reject(Error("Upload connection failed. Select the file again to retry."));
+      request.onload = () => {
+        let data = {}; try { data = JSON.parse(request.responseText); } catch (_) {}
+        if (request.status >= 200 && request.status < 300) resolve(data);
+        else reject(Error(data.error || `Upload failed (${request.status})`));
+      };
+      request.send(file);
+    });
+    busy = false; transcript = null; removedRow = null; $("approved").checked = false;
+    await init(); message(`${file.name} loaded. ${kind === "audio" ? "Upload the matching EPUB to begin." : "Choose Find EPUB chapters to begin matching."}`);
+  } catch (error) { message(error.message, true); }
+  finally { busy = false; $("upload-progress").hidden = true; updateControls(); renderProposals(); }
+}
+$("audio-upload").onchange = event => { uploadFile("audio", event.target.files[0]); event.target.value = ""; };
+$("epub-upload").onchange = event => { uploadFile("epub", event.target.files[0]); event.target.value = ""; };
+$("open-project").onclick = async () => {
+  if (!$("project-list").value || busy) return;
+  try {
+    busy = true; updateControls(); renderProposals();
+    await persistReview(); await api("open", {id: $("project-list").value});
+    audio.pause(); transcript = null; removedRow = null; $("approved").checked = false;
+    busy = false;
+    await init(); message("Saved project opened. Review and approve before exporting.");
+  } catch (error) { message(error.message, true); }
+  finally { busy = false; updateControls(); renderProposals(); }
+};
+$("align").onclick = () => startJob("align", {model: $("speech-model").value, language: $("speech-language").value.trim().toLowerCase() || null});
+$("pause-job").onclick = async () => {
+  try { await api("cancel", {}); message("Pausing at the next safe point. Completed audio chunks are saved."); }
+  catch (error) { message(error.message, true); }
+};
+
 init();

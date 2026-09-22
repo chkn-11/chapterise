@@ -13,10 +13,13 @@ import subprocess
 import tempfile
 import threading
 import importlib.util
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote, quote
 
 from transcription import transcribe_audio, validate_options
+from epub_match import read_epub, match_book
+from persistence import save_json
 
 
 STATIC = Path(__file__).parent / "static"
@@ -184,77 +187,224 @@ def write_chapters(source, output, chapters, duration):
     return output
 
 
+def validate_review_rows(rows, duration):
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 10000:
+        raise ValueError('Invalid saved chapter list.')
+    starts = set()
+    for row in rows:
+        if not isinstance(row, dict) or type(row.get('selected')) is not bool:
+            raise ValueError('Invalid chapter marker.')
+        if type(row.get('start')) not in (int, float):
+            raise ValueError('Chapter start must be a number.')
+        start = number(row.get('start'), 'Chapter start', 0, duration)
+        tick = round(start * 1000)
+        if tick >= round(duration * 1000) or tick in starts:
+            raise ValueError('Chapter markers must have distinct times before the audio ends.')
+        starts.add(tick)
+        if not isinstance(row.get('title'), str) or len(row['title']) > 500:
+            raise ValueError('Invalid chapter title.')
+        if row.get('kind') not in {'start', 'pause', 'manual', 'existing', 'epub'}:
+            raise ValueError('Invalid chapter source.')
+        if 'originalStart' in row:
+            number(row['originalStart'], 'Original marker time', 0, duration)
+    if not any(row['start'] == 0 and row['selected'] for row in rows):
+        raise ValueError('Keep the opening chapter selected at zero.')
+    return sorted(rows, key=lambda row: row['start'])
+
+
+def validate_transcript(value, duration):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get('segments'), list) or len(value['segments']) > 200000:
+        raise ValueError('Invalid saved transcript.')
+    for segment in value['segments']:
+        if not isinstance(segment, dict) or not isinstance(segment.get('text'), str) or len(segment['text']) > 10000:
+            raise ValueError('Invalid transcript passage.')
+        for key in ('start', 'end'):
+            if type(segment.get(key)) not in (int, float):
+                raise ValueError('Invalid transcript time.')
+            number(segment[key], 'Transcript time', 0, duration + .001)
+        if segment['end'] <= segment['start']:
+            raise ValueError('Invalid transcript passage duration.')
+        words = segment.get('words', [])
+        if not isinstance(words, list) or len(words) > 10000:
+            raise ValueError('Invalid transcript words.')
+        for word in words:
+            if not isinstance(word, dict) or not isinstance(word.get('word'), str):
+                raise ValueError('Invalid transcript word.')
+            for key in ('start', 'end'):
+                if type(word.get(key)) not in (int, float):
+                    raise ValueError('Invalid word time.')
+                number(word[key], 'Word time', segment['start'], segment['end'])
+            if word['end'] < word['start']:
+                raise ValueError('Invalid word duration.')
+        words.sort(key=lambda w: w['start'])
+    value['segments'].sort(key=lambda s: s['start'])
+    return value
+
+
 class Session:
-    def __init__(self, source, output):
-        self.source, self.output = source, output
-        self.info = probe(source)
-        self.duration = number(self.info["format"]["duration"], "Audio duration", 0.001, 1e9)
-        self.fingerprint = self.signature()
-        self.lock = threading.Lock()
-        self.job = {"status": "idle", "progress": 0}
-        self.transcript = None
-        self.rows = [{"start": float(c["start_time"]), "title": c.get("tags", {}).get("title", ""),
-                      "selected": True, "kind": "existing", "pause": None}
-                     for c in self.info.get("chapters", [])]
-        if not self.rows or self.rows[0]["start"] > 0:
-            self.rows.insert(0, {"start": 0, "title": "Chapter 1", "selected": True,
-                                 "kind": "start", "pause": None})
+    def __init__(self, source=None, output=None, workspace=None):
+        self.workspace = Path(workspace).resolve() if workspace else None
+        self.lock = threading.RLock()
+        self.cancelled = threading.Event()
+        self.job = {'status': 'idle', 'progress': 0}
+        self.source = self.output = self.project = None
+        self.info, self.rows, self.duration = {}, [], 0
+        self.transcript = self.book = self.alignment = None
+        self.omitted_sections = []
+        self.notice = ''
+        if self.workspace:
+            self.workspace.mkdir(parents=True, exist_ok=True)
+        if source:
+            self.load_source(Path(source), output)
+        elif self.workspace and (self.workspace / 'last.json').exists():
+            try:
+                self.open_project(json.loads((self.workspace / 'last.json').read_text())['id'])
+            except (ValueError, OSError, KeyError) as error:
+                self.notice = f'Could not reopen the previous project: {error}'
+
+    def load_source(self, source, output=None):
+        info = probe(source)
+        duration = number(info['format']['duration'], 'Audio duration', .001, 1e9)
+        with self.lock:
+            self.source = source.resolve()
+            self.output = Path(output) if output else self.source.with_name(self.source.stem + '.chaptered' + self.source.suffix)
+            self.info, self.duration = info, duration
+            self.fingerprint = self.signature()
+            self.transcript = self.book = self.alignment = None
+            self.omitted_sections = []
+            self.rows = [{'start': float(c['start_time']), 'title': c.get('tags', {}).get('title', ''),
+                          'selected': True, 'kind': 'existing', 'pause': None} for c in info.get('chapters', [])]
+            if not self.rows or self.rows[0]['start'] > 0:
+                self.rows.insert(0, {'start': 0, 'title': 'Chapter 1', 'selected': True, 'kind': 'start', 'pause': None})
+            self.project = None
+            if self.workspace:
+                key = hashlib.sha256(json.dumps([str(self.source), self.fingerprint]).encode()).hexdigest()[:24]
+                self.project = self.workspace / key
+                saved = self.project / 'project.json'
+                if saved.exists():
+                    data = json.loads(saved.read_text(encoding='utf-8'))
+                    if tuple(data['fingerprint']) == self.fingerprint:
+                        self.rows = validate_review_rows(data['rows'], duration)
+                        self.transcript, self.book, self.alignment = data.get('transcript'), data.get('book'), data.get('alignment')
+                        self.omitted_sections = data.get('omitted_sections', [])
+                save_json(self.workspace / 'last.json', {'id': key})
+                self.persist()
+
+    def persist(self):
+        if self.project:
+            with self.lock:
+                save_json(self.project / 'project.json', {
+                    'source': str(self.source), 'output': str(self.output), 'fingerprint': self.fingerprint,
+                    'duration': self.duration, 'rows': self.rows, 'transcript': self.transcript,
+                    'book': self.book, 'alignment': self.alignment, 'omitted_sections': self.omitted_sections})
+
+    def projects(self):
+        result = []
+        if self.workspace:
+            for file in self.workspace.glob('*/project.json'):
+                try:
+                    data = json.loads(file.read_text(encoding='utf-8'))
+                    result.append({'id': file.parent.name, 'filename': Path(data['source']).name})
+                except (ValueError, OSError, KeyError):
+                    continue
+        return result
+
+    def open_project(self, identifier):
+        if not self.workspace or not isinstance(identifier, str) or not re.fullmatch(r'[a-f0-9]{24}', identifier):
+            raise ValueError('Invalid project identifier.')
+        data = json.loads((self.workspace / identifier / 'project.json').read_text(encoding='utf-8'))
+        source = Path(data['source'])
+        stat = source.stat()
+        if (stat.st_size, stat.st_mtime_ns, stat.st_ino) != tuple(data['fingerprint']):
+            raise ValueError('The source changed; upload it again to create a new project.')
+        self.load_source(source, data['output'])
 
     def signature(self):
+        if not self.source:
+            raise ValueError('Upload an M4A or M4B file first.')
         stat = self.source.stat()
         return (stat.st_size, stat.st_mtime_ns, stat.st_ino)
 
     def unchanged(self):
         if self.signature() != self.fingerprint:
-            raise ValueError("The source file changed. Restart the app before continuing.")
+            raise ValueError('The source file changed. Reopen it before continuing.')
 
     def state(self):
         with self.lock:
-            return {"filename": self.source.name, "duration": self.duration,
-                    "output": str(self.output), "rows": self.rows, "job": self.job.copy(),
-                    "transcription_available": importlib.util.find_spec("faster_whisper") is not None,
-                    "transcript_ready": self.transcript is not None}
+            return {'filename': self.source.name if self.source else None, 'duration': self.duration,
+                    'output': str(self.output) if self.output else '', 'rows': self.rows, 'job': self.job.copy(),
+                    'transcription_available': importlib.util.find_spec('faster_whisper') is not None,
+                    'transcript_ready': self.transcript is not None,
+                    'book_title': self.book['title'] if self.book else None,
+                    'alignment_ready': self.alignment is not None, 'omitted_sections': self.omitted_sections,
+                    'project_id': self.project.name if self.project else None, 'notice': self.notice}
+
+    def progress(self, value, detail):
+        with self.lock:
+            self.job.update(progress=value, detail=detail)
 
     def transcribe(self, settings):
-        def progress(value, detail):
-            with self.lock:
-                self.job.update(progress=value, detail=detail)
-        transcript = transcribe_audio(self.source, self.duration, settings.get("model", "base"),
-                                      settings.get("language") or None, progress)
+        options = {}
+        if self.project:
+            options = {'checkpoint_dir': self.project / 'chunks', 'cancelled': self.cancelled.is_set,
+                       'word_timestamps': True}
+        transcript = transcribe_audio(self.source, self.duration, settings.get('model', 'base'),
+                                      settings.get('language') or None, self.progress, **options)
         self.unchanged()
         with self.lock:
             self.transcript = transcript
-        return {"operation": "transcribe", "count": len(transcript["segments"])}
+            self.alignment = None
+            self.persist()
+        return {'operation': 'transcribe', 'count': len(transcript['segments'])}
 
-    def start_job(self, operation):
+    def align(self, settings):
+        if not self.book:
+            raise ValueError('Upload the matching EPUB first.')
+        if self.transcript is None:
+            self.transcribe(settings)
+        if self.cancelled.is_set():
+            raise InterruptedError('Paused. Start again to resume.')
+        def progress(value, detail):
+            if self.cancelled.is_set():
+                raise InterruptedError('Matching paused. Run again to retry; the transcript is saved.')
+            self.progress(value, detail)
+        result = match_book(self.book, self.transcript, progress)
+        self.unchanged()
         with self.lock:
-            if self.job["status"] == "running":
-                raise ValueError("An operation is already running.")
-            self.job = {"status": "running", "progress": 0}
+            self.alignment = result
+            self.persist()
+        return {'operation': 'align', 'count': sum(p['start'] is not None for p in result['proposals'])}
 
+    def start_job(self, operation, cancellable=False):
+        with self.lock:
+            if self.job['status'] == 'running':
+                raise ValueError('An operation is already running.')
+            self.job = {'status': 'running', 'progress': 0, 'cancellable': cancellable}
+            self.cancelled.clear()
         def worker():
             try:
                 self.unchanged()
                 result = operation()
                 with self.lock:
-                    self.job.update(status="done", progress=100, result=result)
+                    self.job.update(status='done', progress=100, result=result)
             except Exception as error:
                 with self.lock:
-                    self.job.update(status="error", error=str(error))
+                    self.job.update(status='error', error=str(error))
         threading.Thread(target=worker, daemon=True).start()
 
     def scan(self, settings):
-        def progress(value):
-            with self.lock:
-                self.job["progress"] = round(value)
-        candidates = detect_pauses(self.source, self.duration, settings.get("noise", -35),
-                                   settings.get("minimum", 2), settings.get("spacing", 60), progress)
+        candidates = detect_pauses(self.source, self.duration, settings.get('noise', -35),
+                                   settings.get('minimum', 2), settings.get('spacing', 60),
+                                   lambda value: self.progress(round(value), 'Finding pauses…'))
         self.unchanged()
-        existing = [r for r in self.rows if r["kind"] != "pause"]
-        candidates = [r for r in candidates if all(abs(r["start"] - e["start"]) > 0.5 for e in existing)]
+        existing = [r for r in self.rows if r['kind'] != 'pause']
+        candidates = [r for r in candidates if all(abs(r['start'] - e['start']) > .5 for e in existing)]
         with self.lock:
-            self.rows = sorted(existing + candidates, key=lambda r: r["start"])
-        return {"operation": "scan", "count": len(candidates)}
+            self.rows = sorted(existing + candidates, key=lambda r: r['start'])
+            self.persist()
+        return {'operation': 'scan', 'count': len(candidates)}
 
 
 def handler_for(session, token):
@@ -301,7 +451,16 @@ def handler_for(session, token):
                     with session.lock:
                         transcript = session.transcript
                     self.json(transcript)
-                elif route == "audio":
+                elif route == "api/alignment":
+                    self.json({'book': {'title': session.book['title'], 'chapters': [
+                        {k: c[k] for k in ('id', 'title', 'word_count')} for c in session.book['chapters']],
+                        'warnings': session.book['warnings']} if session.book else None,
+                        'alignment': session.alignment})
+                elif route == "api/projects":
+                    self.json(session.projects())
+                elif route == "export" and session.output and session.output.is_file():
+                    self.audio(session.output, download=True)
+                elif route == "audio" and session.source:
                     self.audio()
                 elif route in {"", "app.js", "style.css"}:
                     filename, kind = {"": ("index.html", "text/html; charset=utf-8"),
@@ -313,8 +472,9 @@ def handler_for(session, token):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-        def audio(self):
-            size = session.source.stat().st_size
+        def audio(self, path=None, download=False):
+            source = path or session.source
+            size = source.stat().st_size
             start, end, partial = 0, size - 1, False
             byte_range = self.headers.get("Range")
             if byte_range:
@@ -337,6 +497,8 @@ def handler_for(session, token):
             self.send_response(206 if partial else 200)
             self.send_header("Content-Type", "audio/mp4")
             self.send_header("Accept-Ranges", "bytes")
+            if download:
+                self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + quote(source.name))
             self.send_header("Content-Length", str(end - start + 1))
             self.send_header("Cache-Control", "no-store")
             if partial:
@@ -344,7 +506,7 @@ def handler_for(session, token):
             self.end_headers()
             if self.command == "HEAD":
                 return
-            with session.source.open("rb") as audio:
+            with source.open("rb") as audio:
                 audio.seek(start)
                 remaining = end - start + 1
                 while remaining:
@@ -354,6 +516,57 @@ def handler_for(session, token):
                     self.wfile.write(block)
                     remaining -= len(block)
 
+        def upload(self, route):
+            if not session.workspace:
+                raise ValueError('Uploads require a project workspace. Restart using app.py.')
+            name = unquote(self.headers.get('X-File-Name', ''))
+            if not name or Path(name).name != name or '\\' in name or any(ord(c) < 32 for c in name):
+                raise ValueError('Invalid upload filename.')
+            audio = route.endswith('/audio')
+            suffixes = {'.m4a', '.m4b'} if audio else {'.epub'}
+            if Path(name).suffix.lower() not in suffixes:
+                raise ValueError('Choose an M4A/M4B audio file or an EPUB book.')
+            length = int(self.headers.get('Content-Length', '0'))
+            maximum = 32 * 1024**3 if audio else 100 * 1024**2
+            if not 0 < length <= maximum:
+                raise ValueError('Upload exceeds the size limit (32 GB audio / 100 MB EPUB).')
+            with session.lock:
+                if session.job['status'] == 'running':
+                    raise ValueError('An operation is already running.')
+                if not audio and not session.source:
+                    raise ValueError('Upload the audiobook first.')
+                session.job = {'status': 'running', 'progress': 0, 'detail': 'Receiving file…'}
+            directory = None
+            try:
+                directory = Path(tempfile.mkdtemp(prefix='upload-', dir=session.workspace))
+                path = directory / name
+                if shutil.disk_usage(directory).free < length + 100_000_000:
+                    raise ValueError('Not enough disk space to receive this file.')
+                self.connection.settimeout(600)
+                with path.open('xb') as output:
+                    remaining = length
+                    while remaining:
+                        block = self.rfile.read(min(remaining, 1024 * 1024))
+                        if not block:
+                            raise ValueError('Upload interrupted. Select the file and retry.')
+                        output.write(block)
+                        remaining -= len(block)
+                if audio:
+                    session.load_source(path)
+                    directory = None  # The project owns the uploaded source now.
+                else:
+                    book = read_epub(path)
+                    with session.lock:
+                        session.book, session.alignment = book, None
+                        session.omitted_sections = []
+                        session.persist()
+            finally:
+                if directory:
+                    shutil.rmtree(directory)
+                with session.lock:
+                    session.job = {'status': 'idle', 'progress': 0}
+            self.json({'status': 'loaded'})
+
         def do_POST(self):
             route = self.route()
             if route is None:
@@ -362,15 +575,51 @@ def handler_for(session, token):
                 origin = self.headers.get("Origin")
                 if origin and origin != f"http://127.0.0.1:{self.server.server_port}":
                     raise ValueError("Unexpected request origin.")
+                if route in {'api/upload/audio', 'api/upload/epub'}:
+                    self.upload(route)
+                    return
                 if self.headers.get("Content-Type") != "application/json":
                     raise ValueError("Expected JSON.")
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 2_000_000:
+                if not 0 < length <= 100_000_000:
                     raise ValueError("Invalid request size.")
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("Expected a JSON object.")
-                if route == "api/scan":
+                if route == 'api/cancel':
+                    session.cancelled.set()
+                    self.json({'status': 'pausing'})
+                    return
+                if route in {'api/review', 'api/open'}:
+                    with session.lock:
+                        if session.job['status'] == 'running':
+                            raise ValueError('Wait for the current operation to finish.')
+                        if route == 'api/open':
+                            session.open_project(body.get('id'))
+                            session.job = {'status': 'idle', 'progress': 0}
+                        else:
+                            session.unchanged()
+                            if 'project_id' in body and body['project_id'] != (session.project.name if session.project else None):
+                                raise ValueError('The open project changed. Reload this page before editing.')
+                            rows = validate_review_rows(body.get('rows'), session.duration)
+                            omitted = body.get('omitted_sections', session.omitted_sections)
+                            if (not isinstance(omitted, list) or len(omitted) > 2000 or
+                                    any(not isinstance(i, str) or len(i) > 100 for i in omitted)):
+                                raise ValueError('Invalid omitted section list.')
+                            if 'transcript' in body:
+                                transcript = validate_transcript(body['transcript'], session.duration)
+                                session.transcript, session.alignment = transcript, None
+                            session.rows = rows
+                            session.omitted_sections = list(dict.fromkeys(omitted))
+                            session.persist()
+                    self.json({'status': 'saved'})
+                    return
+                if route == 'api/align':
+                    validate_options(body.get('model', 'base'), body.get('language') or None)
+                    if not session.book:
+                        raise ValueError('Upload the matching EPUB first.')
+                    session.start_job(lambda: session.align(body), cancellable=True)
+                elif route == "api/scan":
                     # Validate before launching a long-running job.
                     number(body.get("noise", -35), "Silence threshold", -90, -5)
                     number(body.get("minimum", 2), "Minimum pause", 0.1, 120)
@@ -378,7 +627,7 @@ def handler_for(session, token):
                     session.start_job(lambda: session.scan(body))
                 elif route == "api/transcribe":
                     validate_options(body.get("model", "base"), body.get("language") or None)
-                    session.start_job(lambda: session.transcribe(body))
+                    session.start_job(lambda: session.transcribe(body), cancellable=True)
                 elif route == "api/export":
                     if body.get("approved") is not True:
                         raise ValueError("Review and approve the chapter list first.")
@@ -397,28 +646,37 @@ def handler_for(session, token):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("file", type=Path, help="Source .m4a or .m4b file")
+    parser.add_argument("file", nargs="?", type=Path, help="Optional source .m4a/.m4b; omit for browser uploads")
+    parser.add_argument("--epub", type=Path, help="Optional matching EPUB")
+    parser.add_argument("--workspace", type=Path, default=STATIC.parent / ".chapterise-data", help="Local project and transcription storage")
     parser.add_argument("--output", type=Path, help="New output path; defaults to NAME.chaptered.m4a")
     parser.add_argument("--port", type=int, default=0, help="Local port; default chooses a free port")
     args = parser.parse_args()
     for binary in ("ffmpeg", "ffprobe"):
         if not shutil.which(binary):
             parser.error(f"Install FFmpeg and ensure {binary} is on PATH.")
-    source = args.file.expanduser().resolve()
-    if not source.is_file() or source.suffix.lower() not in {".m4a", ".m4b"}:
-        parser.error("Provide an existing .m4a or .m4b file.")
-    output = (args.output.expanduser().absolute() if args.output else
-              source.with_name(f"{source.stem}.chaptered{source.suffix}"))
-    if output.exists() or output.suffix.lower() not in {".m4a", ".m4b"} or not output.parent.is_dir():
-        parser.error("Output must be a new .m4a/.m4b file in an existing directory.")
+    source = args.file.expanduser().resolve() if args.file else None
+    if source and (not source.is_file() or source.suffix.lower() not in {'.m4a', '.m4b'}):
+        parser.error('Provide an existing .m4a or .m4b file.')
+    if args.output and not source:
+        parser.error('--output requires a source file.')
+    output = args.output.expanduser().absolute() if args.output else None
+    if output and (output.suffix.lower() not in {'.m4a', '.m4b'} or not output.parent.is_dir()):
+        parser.error('Output must be an .m4a/.m4b file in an existing directory.')
     try:
-        session = Session(source, output)
+        session = Session(source, output, args.workspace.expanduser())
+        if args.epub:
+            if not session.source:
+                parser.error('Load an audiobook before adding an EPUB.')
+            session.book = read_epub(args.epub.expanduser())
+            session.alignment = None
+            session.persist()
         token = secrets.token_urlsafe(24)
         server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(session, token))
     except (ValueError, OSError) as error:
         parser.error(str(error))
     print(f"Open http://127.0.0.1:{server.server_port}/{token}/", flush=True)
-    print(f"Approved output: {output}\nPress Ctrl+C to stop.", flush=True)
+    print(f"Projects: {session.workspace}\nPress Ctrl+C to stop. Completed transcription chunks are saved.", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

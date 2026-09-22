@@ -11,9 +11,22 @@
   <main>
     <header><span class="eyebrow">LOCAL AUDIO WORKSHOP</span><h1>Chapterise<span>.</span></h1>
       <p>Find the pauses. Listen for a new chapter. Keep the breaks that belong.</p></header>
+    <section>
+      <h2>Open a chaptering project</h2>
+      <p class="hint">Choose an audiobook and its matching EPUB. Files and processing stay on this computer. Completed transcription chunks and chapter edits are saved locally.</p>
+      <fieldset id="project-controls">
+        <div class="manual-fields">
+          <label>Audiobook (.m4b / .m4a)<input id="audio-upload" type="file" accept=".m4b,.m4a,audio/mp4"></label>
+          <label>Matching book (.epub)<input id="epub-upload" type="file" accept=".epub,application/epub+zip"></label>
+        </div>
+        <div class="toolbar"><label>Saved project<select id="project-list"><option value="">Choose a saved project…</option></select></label><button id="open-project">Open saved project</button></div>
+      </fieldset>
+      <progress id="upload-progress" max="100" value="0" hidden></progress>
+      <p id="save-status" class="hint" role="status"></p>
+    </section>
     <section class="player">
       <div class="fileline"><h2 id="filename">Loading audio…</h2><span id="duration"></span></div>
-      <audio id="audio" controls preload="metadata" src="audio"></audio>
+      <audio id="audio" controls preload="metadata" ></audio>
       <p id="playback-help">Preview starts at the exact timestamp and plays the next 10 seconds, or until the audio ends.</p>
     </section>
     <section>
@@ -45,9 +58,17 @@
         <div id="transcript-results" class="transcript-results"></div>
       </div>
     </section>
+    <section id="epub-section">
+      <h2>Match chapters from the EPUB</h2>
+      <p id="book-status" class="hint">Upload a matching EPUB to locate its chapters in the audiobook.</p>
+      <p class="hint">The assistant searches chapter-opening phrases, widens its search for adapted passages, and checks chapter order. A later passage is a navigation clue, not a confirmed chapter boundary. Confidence labels describe evidence, not a probability.</p>
+      <div class="toolbar"><button id="align" class="primary" disabled>Find EPUB chapters</button><button id="pause-job" hidden>Pause processing</button></div>
+      <p id="alignment-summary" role="status"></p>
+      <div id="proposals" class="proposals"></div>
+    </section>
     <section>
       <div class="fileline"><h2><span class="step">02</span> Review your chapters</h2><span id="count"></span></div>
-      <p class="hint">Check the markers to include. Slide each marker up to 15 seconds before or after its original position, then Preview to listen. Use the arrow keys for millisecond adjustments, or type a start time as HH:MM:SS.mmm or seconds. Sliders stop at the audio boundaries; the first chapter stays at zero. Scanning again replaces unsaved edits.</p>
+      <p class="hint">Check the markers to include. Slide each marker up to 15 seconds before or after its original position, then Preview to listen. Use the arrow keys for millisecond adjustments, or type a start time as HH:MM:SS.mmm or seconds. Sliders stop at the audio boundaries; the first chapter stays at zero. Scanning again replaces pause suggestions; saved manual and EPUB markers are kept.</p>
       <fieldset id="review">
       <form id="manual-form" class="manual-editor">
         <h3>Add a missing chapter</h3>
@@ -79,6 +100,7 @@
       <code id="output"></code>
       <label class="approval"><input id="approved" type="checkbox"> I have reviewed and approve these chapter markers and titles.</label>
       <button id="export" class="primary" disabled>Export approved chapters</button>
+      <a id="download-export" href="export" hidden>Download exported audio</a>
     </section>
     <footer>Pause detection is a suggestion, not a guarantee of a chapter break. No account, API key, or cloud upload.</footer>
   </main>

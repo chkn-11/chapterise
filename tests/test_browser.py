@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_app as fixtures
+import test_epub as epub_fixtures
 from app import Session, ThreadingHTTPServer, handler_for, probe
 
 @unittest.skipUnless(os.environ.get("CHAPTERISE_TEST_BROWSER"), "Set CHAPTERISE_TEST_BROWSER to a Chromium browser binary")
@@ -35,7 +36,8 @@ class BrowserSmoke(unittest.TestCase):
         speech_mock.start()
         self.addCleanup(speech_mock.stop)
         server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(
-            BrowserSession(fixtures.AudioTests.source, fixtures.AudioTests.directory / 'browser.m4a'), 'browser-test'))
+            BrowserSession(fixtures.AudioTests.source, fixtures.AudioTests.directory / 'browser.m4a',
+                           fixtures.AudioTests.directory / 'projects'), 'browser-test'))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         browser = None
         wire = None
@@ -79,7 +81,9 @@ class BrowserSmoke(unittest.TestCase):
                     payload = json.dumps({'id': serial, 'method': method, 'params': params or {}}).encode()
                     mask = os.urandom(4)
                     length = len(payload)
-                    header = bytes([0x81, 0x80 | length]) if length < 126 else bytes([0x81, 0xfe]) + struct.pack('!H', length)
+                    header = (bytes([0x81, 0x80 | length]) if length < 126 else
+                              bytes([0x81, 0xfe]) + struct.pack('!H', length) if length < 65536 else
+                              bytes([0x81, 0xff]) + struct.pack('!Q', length))
                     wire.sendall(header + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(payload)))
                     while True:
                         first, second = exact(2)
@@ -202,6 +206,53 @@ class BrowserSmoke(unittest.TestCase):
                 self.assertNotIn(18, [float(c['start_time']) for c in exported])
                 self.assertEqual(evaluate('transcript.segments.length'), 3)
                 self.assertAlmostEqual(float(exported[1]['start_time']), adjusted, places=3)
+                # A new upload can be matched against an EPUB and restored after refresh.
+                audio_data = base64.b64encode(fixtures.AudioTests.source.read_bytes()).decode()
+                evaluate(f"uploadFile('audio', new File([Uint8Array.from(atob('{audio_data}'), c => c.charCodeAt(0))], 'uploaded.m4b'))")
+                self.assertEqual(evaluate('state.filename'), 'uploaded.m4b')
+                self.assertEqual(evaluate('rows.length'), 1)
+                book_file = epub_fixtures.make_epub(fixtures.AudioTests.directory / 'fixture.epub')
+                # Replace chapter one's text with our deterministic recognition fixture.
+                from zipfile import ZipFile
+                with ZipFile(book_file) as archive:
+                    files = {name: archive.read(name) for name in archive.namelist()}
+                files['OPS/text.xhtml'] = files['OPS/text.xhtml'].replace(b'Opening text for chapter one.', epub_fixtures.MatchingTests.passage.encode())
+                with ZipFile(book_file, 'w') as archive:
+                    for name, content in files.items(): archive.writestr(name, content)
+                epub_data = base64.b64encode(book_file.read_bytes()).decode()
+                evaluate(f"uploadFile('epub', new File([Uint8Array.from(atob('{epub_data}'), c => c.charCodeAt(0))], 'fixture.epub'))")
+                speech['segments'] = [epub_fixtures.transcript_passage(epub_fixtures.MatchingTests.passage, 1)]
+                evaluate("document.getElementById('align').click()")
+                until("document.getElementById('status').textContent.startsWith('EPUB matching finished')")
+                self.assertEqual(evaluate("document.querySelectorAll('.proposal').length"), 2)
+                self.assertEqual(evaluate('rows.length'), 1)  # No automatic acceptance.
+                self.assertEqual(evaluate('alignment.proposals[0].start'), 1)
+                self.assertIsNone(evaluate('alignment.proposals[1].start'))
+                evaluate("document.querySelector('.proposal button').click()")
+                self.assertAlmostEqual(evaluate('audio.currentTime'), 1, places=3)
+                self.assertAlmostEqual(evaluate('previewEnd'), 11, places=3)
+                evaluate('audio.pause()')
+                evaluate("document.querySelector('.proposal button:nth-child(2)').click()")
+                self.assertEqual(evaluate('rows.length'), 2)
+                self.assertEqual(evaluate('rows[1].kind'), 'epub')
+                self.assertTrue(evaluate("document.getElementById('export').disabled"))
+                evaluate("document.querySelector('#rows tr:nth-child(2) .remove-marker').click(); document.getElementById('undo-remove').click()")
+                self.assertEqual(evaluate('rows.length'), 2)
+                self.assertTrue(evaluate("document.querySelector('.proposal button:nth-child(2)').disabled"))
+                evaluate("document.querySelector('.omit-section').click()")
+                self.assertEqual(evaluate('omittedSections.length'), 1)
+                self.assertIn('Marked not present', evaluate("document.querySelectorAll('.proposal .confidence')[1].textContent"))
+                evaluate('persistReview()')
+                call('Page.reload')
+                until("typeof alignment !== 'undefined' && alignment?.proposals.length === 2 && rows.length === 2")
+                self.assertFalse(evaluate("document.getElementById('approved').checked"))
+                self.assertEqual(evaluate('rows[1].title'), 'First')
+                self.assertEqual(evaluate('omittedSections.length'), 1)
+                self.assertEqual(evaluate("document.querySelector('.omit-section').textContent"), 'Reconsider section')
+                evaluate("document.querySelector('.omit-section').click()")
+                self.assertEqual(evaluate('omittedSections.length'), 0)
+                evaluate('persistReview()')
+                self.assertEqual(evaluate('transcript.segments.length'), 1)
                 if os.environ.get('CHAPTERISE_TEST_SCREENSHOT'):
                     screenshot = call('Page.captureScreenshot', {'format': 'png', 'captureBeyondViewport': True})
                     Path(os.environ['CHAPTERISE_TEST_SCREENSHOT']).write_bytes(base64.b64decode(screenshot['data']))
