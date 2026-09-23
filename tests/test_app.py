@@ -3,9 +3,11 @@ import hashlib
 import http.client
 import json
 import math
+import queue
 from pathlib import Path
 import shutil
 import sys
+import subprocess
 import tempfile
 import threading
 import time
@@ -15,10 +17,47 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import (Session, ThreadingHTTPServer, detect_pauses, handler_for, probe,
-                 run, validate_chapters, verify_chapters, write_chapters)
+                 run, validate_chapters, verify_chapters, write_chapters, validate_public_origin)
 
 
 class ValidationTests(unittest.TestCase):
+    def test_public_origin_validation(self):
+        self.assertEqual(validate_public_origin('http://192.168.1.50:8765/'), 'http://192.168.1.50:8765')
+        self.assertEqual(validate_public_origin('https://Books.Example:443'), 'https://books.example')
+        self.assertIsNone(validate_public_origin(None))
+        for value in ('https://example/path', 'http://user:secret@example', 'file:///tmp',
+                      'http://example:0', 'http://example:99999', 'http://example?query',
+                      'http://bad host', 'http://example\\other'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_public_origin(value)
+
+    def test_server_origin_allows_configured_host_and_rejects_others(self):
+        session = Session()
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(session, 'test', 'http://books.example:8765'))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        def request(host, origin=None, forwarded=None):
+            headers = {'Host': host, 'Content-Type': 'application/json'}
+            if origin:
+                headers['Origin'] = origin
+            if forwarded:
+                headers['X-Forwarded-Host'] = forwarded
+            connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=5)
+            connection.request('POST' if origin else 'GET', '/test/api/cancel' if origin else '/test/api/state',
+                               '{}' if origin else None, headers)
+            response = connection.getresponse()
+            code = response.status
+            response.read()
+            connection.close()
+            return code
+        try:
+            self.assertEqual(request('books.example:8765'), 200)
+            self.assertEqual(request('books.example:8765', 'http://books.example:8765'), 200)
+            self.assertEqual(request('books.example:8765', 'http://other.example'), 400)
+            self.assertEqual(request('other.example', forwarded='books.example:8765'), 403)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_verification_reports_specific_mismatches(self):
         expected = [{"start": 0, "title": "Intro"}]
         valid = {"start_time": "0", "end_time": "10", "tags": {"title": "Intro"}}
@@ -173,6 +212,38 @@ class AudioTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_container_listen_address_keeps_private_url_checks(self):
+        process = subprocess.Popen([
+            sys.executable, str(Path(__file__).resolve().parents[1] / 'app.py'),
+            '--host', '0.0.0.0', '--port', '0', '--workspace', str(self.directory / 'container-projects'),
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            lines = queue.Queue()
+            threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True).start()
+            line = lines.get(timeout=15)
+            self.assertTrue(line.startswith('Open http://127.0.0.1:'), line)
+            from urllib.parse import urlsplit
+            url = urlsplit(line.strip().removeprefix('Open '))
+            def request(path, method='GET', headers=None, body=None):
+                connection = http.client.HTTPConnection('127.0.0.1', url.port, timeout=5)
+                connection.request(method, path, body=body, headers=headers or {})
+                response = connection.getresponse()
+                result = response.status, response.read()
+                connection.close()
+                return result
+            code, data = request(url.path + 'api/state')
+            self.assertEqual(code, 200)
+            self.assertIsNone(json.loads(data)['filename'])
+            self.assertEqual(request('/')[0], 403)
+            self.assertEqual(request(url.path, headers={'Host': 'untrusted.example'})[0], 403)
+            code, data = request(url.path + 'api/review', 'POST',
+                                 {'Content-Type': 'application/json', 'Origin': 'http://untrusted.example'}, '{}')
+            self.assertEqual(code, 400)
+            self.assertIn(b'Unexpected request origin', data)
+        finally:
+            process.terminate()
+            process.communicate(timeout=10)
 
 
 if __name__ == "__main__":

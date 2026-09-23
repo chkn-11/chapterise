@@ -2,6 +2,77 @@
 
 A local browser tool for finding potential chapters in M4A/M4B audio using pauses or a matching EPUB, reviewing the proposed breaks, and writing approved chapter metadata into a new file.
 
+## Docker
+
+### Install the published image on another computer or server
+
+The GitHub publishing workflow builds and tests `ghcr.io/chkn-11/chapterise:latest` for **Linux x86-64 (Intel/AMD)**. It also publishes a `sha-<full-commit-id>` tag for pinning a specific build. The image is private, like this repository.
+
+Copy [compose.published.yaml](compose.published.yaml) to a directory on your Docker host. No source checkout or local image build is required. Log in with a GitHub account that can access the package, using a **personal access token (classic)** with `read:packages` as the password ([GitHub's registry authentication instructions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry)):
+
+```bash
+docker login ghcr.io -u YOUR_GITHUB_USERNAME
+```
+
+For a server accessed over your LAN, create a `.env` file beside the Compose file, replacing the example address with your Docker server's actual IP address or hostname:
+
+```dotenv
+CHAPTERISE_BIND=0.0.0.0
+CHAPTERISE_PORT=8765
+CHAPTERISE_PUBLIC_ORIGIN=http://192.168.1.50:8765
+```
+
+For use on the same computer, omit `.env`; the default is loopback-only at `http://127.0.0.1:8765`. If you change the published port, include it in `CHAPTERISE_PUBLIC_ORIGIN` too. The internal container port remains 8765.
+
+```bash
+docker compose -f compose.published.yaml pull
+docker compose -f compose.published.yaml up -d
+docker compose -f compose.published.yaml logs --tail=20 chapterise
+```
+
+Open the complete URL printed in the logs, including its session token. Projects and downloaded speech models persist in named volumes. To update, rerun `pull` and `up -d` after current jobs finish; the session URL changes when the container restarts. To pin a build, replace `:latest` in the Compose file with its `:sha-...` tag.
+
+The app is intended for a trusted LAN or VPN. The URL token grants access to your audio/projects; keep it private. For HTTPS through a reverse proxy, set the public origin to the exact HTTPS address and have the proxy preserve its `Host` header. Serve the app at the domain root, preserve the token path, and allow large audio uploads. Forwarded headers do not override the configured origin.
+
+### Build locally
+
+With Docker Engine/Desktop and Docker Compose installed, run from this repository:
+
+```bash
+docker compose up --build -d
+docker compose logs chapterise
+```
+
+Open the complete `http://127.0.0.1:8765/<token>/` URL printed in the logs, including the random token. The bare port URL is intentionally rejected. Upload your audiobook and EPUB through the browser. The image includes Python, FFmpeg, and CPU transcription support; no host Python environment is needed. Building requires internet access, and the chosen speech model downloads on first use.
+
+The container runs as a non-root user. It listens on all container interfaces, while Compose publishes the port only on the host's loopback interface, following [Docker's local port-publishing guidance](https://docs.docker.com/engine/network/port-publishing/). Existing token, Host, and Origin checks remain enabled. Use the printed `127.0.0.1` URL rather than `localhost`.
+
+Two named volumes retain your data: `projects` at `/data` holds uploads, reviews, EPUB text, transcripts, checkpoints, and exports; `models` at `/models` holds downloaded speech models. Neither books nor local caches enter the image/build context. Use **Download exported audio** to copy finished audio out through the browser.
+
+```bash
+docker compose stop       # Stop after active exports finish
+docker compose start
+docker compose logs chapterise
+```
+
+A restart generates a new session URL; read the latest log entry. Saved reviews and completed transcription chunks remain, but jobs do not restart automatically. Choose the same model/language to resume. `docker compose down` also keeps the named volumes; adding `--volumes` deletes them and their saved work.
+
+To use another port, set `CHAPTERISE_PORT` consistently for Compose commands (or export it in your shell):
+
+```bash
+CHAPTERISE_PORT=8877 docker compose up --build -d
+```
+
+Compose changes both the application and published port so the printed URL and request checks stay correct. With plain Docker, the equivalent default setup is:
+
+```bash
+docker build -t chapterise:local .
+docker run --rm --init -p 127.0.0.1:8765:8765 \
+  -v chapterise-projects:/data -v chapterise-models:/models chapterise:local
+```
+
+**Existing desktop projects:** Docker starts with a separate workspace. Upload the original audio and EPUB, then **Load review JSON** to restore saved markers and transcripts without retranscribing. Run **Find EPUB chapters** again if you need proposals. Desktop project manifests contain absolute paths and source fingerprints, so copying `.chapterise-data` directly into a container is not a portable migration. Existing host model caches are also separate from the container's model volume.
+
 ## EPUB-assisted chaptering
 
 Install the optional speech recognizer using **Transcription setup** below, then start the upload interface:

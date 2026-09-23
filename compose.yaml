@@ -1,0 +1,15 @@
+services:
+  chapterise:
+    build: .
+    image: chapterise:local
+    init: true
+    ports:
+      - "127.0.0.1:${CHAPTERISE_PORT:-8765}:${CHAPTERISE_PORT:-8765}"
+    command: ["--host", "0.0.0.0", "--port", "${CHAPTERISE_PORT:-8765}", "--workspace", "/data"]
+    volumes:
+      - projects:/data
+      - models:/models
+
+volumes:
+  projects:
+  models:

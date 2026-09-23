@@ -14,6 +14,7 @@ import tempfile
 import threading
 import importlib.util
 import hashlib
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, unquote, quote
 
@@ -407,8 +408,31 @@ class Session:
         return {'operation': 'scan', 'count': len(candidates)}
 
 
-def handler_for(session, token):
+def validate_public_origin(value):
+    """One explicit browser origin; never trust request/forwarded headers as configuration."""
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    if (parsed.scheme not in {'http', 'https'} or not parsed.hostname or
+            parsed.username is not None or parsed.password is not None or
+            parsed.path not in {'', '/'} or parsed.query or parsed.fragment or
+            re.search(r'[\s\\]', value) or
+            not re.fullmatch(r'[a-zA-Z0-9._:-]+', parsed.hostname)):
+        raise ValueError('Public origin must be an http(s) URL with a host and optional port, without a path or credentials.')
+    port = parsed.port
+    if port == 0:
+        raise ValueError('Public origin requires a nonzero port.')
+    hostname = f'[{parsed.hostname}]' if ':' in parsed.hostname else parsed.hostname
+    suffix = f':{port}' if port and port != (443 if parsed.scheme == 'https' else 80) else ''
+    return f'{parsed.scheme}://{hostname}{suffix}'
+
+
+def handler_for(session, token, public_origin=None):
+    public_origin = validate_public_origin(public_origin)
     class Handler(BaseHTTPRequestHandler):
+        def browser_origin(self):
+            return public_origin or f'http://127.0.0.1:{self.server.server_port}'
+
         def log_message(self, *_):
             pass  # Don't log the private session URL.
 
@@ -416,7 +440,7 @@ def handler_for(session, token):
             prefix = f"/{token}/"
             path = urlsplit(self.path).path
             host = self.headers.get("Host", "")
-            expected = f"127.0.0.1:{self.server.server_port}"
+            expected = urlsplit(self.browser_origin()).netloc
             if host != expected or not path.startswith(prefix):
                 self.send_error(403)
                 return None
@@ -573,7 +597,7 @@ def handler_for(session, token):
                 return
             try:
                 origin = self.headers.get("Origin")
-                if origin and origin != f"http://127.0.0.1:{self.server.server_port}":
+                if origin and origin != self.browser_origin():
                     raise ValueError("Unexpected request origin.")
                 if route in {'api/upload/audio', 'api/upload/epub'}:
                     self.upload(route)
@@ -651,6 +675,10 @@ def main():
     parser.add_argument("--workspace", type=Path, default=STATIC.parent / ".chapterise-data", help="Local project and transcription storage")
     parser.add_argument("--output", type=Path, help="New output path; defaults to NAME.chaptered.m4a")
     parser.add_argument("--port", type=int, default=0, help="Local port; default chooses a free port")
+    parser.add_argument("--host", choices=("127.0.0.1", "0.0.0.0"), default="127.0.0.1",
+                        help="Listen address; use 0.0.0.0 inside Docker")
+    parser.add_argument("--public-origin", default=os.environ.get('CHAPTERISE_PUBLIC_ORIGIN'),
+                        help="Browser origin, e.g. http://192.168.1.50:8765; defaults to local loopback")
     args = parser.parse_args()
     for binary in ("ffmpeg", "ffprobe"):
         if not shutil.which(binary):
@@ -664,6 +692,7 @@ def main():
     if output and (output.suffix.lower() not in {'.m4a', '.m4b'} or not output.parent.is_dir()):
         parser.error('Output must be an .m4a/.m4b file in an existing directory.')
     try:
+        public_origin = validate_public_origin(args.public_origin)
         session = Session(source, output, args.workspace.expanduser())
         if args.epub:
             if not session.source:
@@ -672,10 +701,10 @@ def main():
             session.alignment = None
             session.persist()
         token = secrets.token_urlsafe(24)
-        server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(session, token))
+        server = ThreadingHTTPServer((args.host, args.port), handler_for(session, token, public_origin))
     except (ValueError, OSError) as error:
         parser.error(str(error))
-    print(f"Open http://127.0.0.1:{server.server_port}/{token}/", flush=True)
+    print(f"Open {public_origin or f'http://127.0.0.1:{server.server_port}'}/{token}/", flush=True)
     print(f"Projects: {session.workspace}\nPress Ctrl+C to stop. Completed transcription chunks are saved.", flush=True)
     try:
         server.serve_forever()

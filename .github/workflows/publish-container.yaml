@@ -1,0 +1,51 @@
+name: Publish container
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-container
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/chkn-11/chapterise
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate Compose configurations
+        run: |
+          docker compose config --quiet
+          docker compose -f compose.published.yaml config --quiet
+      - name: Build Intel/AMD image
+        run: docker build --platform linux/amd64 --tag "$IMAGE:latest" --tag "$IMAGE:sha-$GITHUB_SHA" .
+      - name: Test inside image
+        run: |
+          docker run --rm --entrypoint python "$IMAGE:latest" -c 'import faster_whisper'
+          docker run --rm --init --volume "$GITHUB_WORKSPACE/tests:/app/tests:ro" --entrypoint python "$IMAGE:latest" -m unittest discover -s tests -v
+      - name: Test published port and writable project volume
+        run: python3 tests/check_container.py "$IMAGE:latest"
+      - name: Publish to GitHub Container Registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:sha-$GITHUB_SHA"
+          docker push "$IMAGE:latest"
+          docker manifest inspect "$IMAGE:latest" > /dev/null
+      - name: Log out
+        if: always()
+        run: docker logout ghcr.io

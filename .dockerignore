@@ -1,0 +1,10 @@
+# Only application sources enter the build context. Never send books or caches.
+**
+!Dockerfile
+!requirements-transcription.txt
+!app.py
+!epub_match.py
+!persistence.py
+!transcription.py
+!static/
+!static/**
