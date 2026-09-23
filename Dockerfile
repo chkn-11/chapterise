@@ -28,4 +28,4 @@ USER chapterise
 EXPOSE 8765
 STOPSIGNAL SIGINT
 ENTRYPOINT ["python", "app.py"]
-CMD ["--host", "0.0.0.0", "--port", "8765", "--workspace", "/data"]
+CMD ["--host", "0.0.0.0", "--workspace", "/data"]

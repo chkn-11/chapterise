@@ -4,8 +4,7 @@ services:
     image: chapterise:local
     init: true
     ports:
-      - "127.0.0.1:${CHAPTERISE_PORT:-8765}:${CHAPTERISE_PORT:-8765}"
-    command: ["--host", "0.0.0.0", "--port", "${CHAPTERISE_PORT:-8765}", "--workspace", "/data"]
+      - "8765:8765"
     volumes:
       - projects:/data
       - models:/models

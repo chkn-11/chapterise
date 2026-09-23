@@ -1,5 +1,5 @@
 # Portainer: Stacks > Add stack > Web editor.
-# Replace 192.168.1.50 with the Docker host's LAN IP or hostname.
+# Open http://<docker-host>:8765/ after deploying.
 services:
   chapterise:
     image: ghcr.io/chkn-11/chapterise:latest
@@ -7,8 +7,6 @@ services:
     restart: unless-stopped
     ports:
       - "8765:8765"
-    environment:
-      CHAPTERISE_PUBLIC_ORIGIN: "http://192.168.1.50:8765"
     volumes:
       - projects:/data
       - models:/models

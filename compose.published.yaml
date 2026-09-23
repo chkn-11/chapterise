@@ -5,9 +5,7 @@ services:
     init: true
     restart: unless-stopped
     ports:
-      - "${CHAPTERISE_BIND:-127.0.0.1}:${CHAPTERISE_PORT:-8765}:8765"
-    environment:
-      CHAPTERISE_PUBLIC_ORIGIN: "${CHAPTERISE_PUBLIC_ORIGIN:-http://127.0.0.1:8765}"
+      - "8765:8765"
     volumes:
       - projects:/data
       - models:/models

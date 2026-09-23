@@ -37,13 +37,13 @@ class BrowserSmoke(unittest.TestCase):
         self.addCleanup(speech_mock.stop)
         server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(
             BrowserSession(fixtures.AudioTests.source, fixtures.AudioTests.directory / 'browser.m4a',
-                           fixtures.AudioTests.directory / 'projects'), 'browser-test'))
+                           fixtures.AudioTests.directory / 'projects')))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         browser = None
         wire = None
         with tempfile.TemporaryDirectory(prefix='chapterise-browser-') as profile:
             try:
-                url = f'http://127.0.0.1:{server.server_port}/browser-test/'
+                url = f'http://127.0.0.1:{server.server_port}/'
                 browser = subprocess.Popen([os.environ['CHAPTERISE_TEST_BROWSER'], '--headless', '--no-sandbox',
                     '--disable-gpu', '--disable-background-networking', '--no-first-run',
                     '--no-default-browser-check', '--remote-debugging-port=0',

@@ -4,41 +4,45 @@ A local browser tool for finding potential chapters in M4A/M4B audio using pause
 
 ## Docker
 
-### Install the published image on another computer or server
+### Portainer / another Docker host
 
-The GitHub publishing workflow builds and tests `ghcr.io/chkn-11/chapterise:latest` for **Linux x86-64 (Intel/AMD)**. It also publishes a `sha-<full-commit-id>` tag for pinning a specific build. Both the source repository and container image are public. No registry login is needed.
+The public image `ghcr.io/chkn-11/chapterise:latest` supports **Linux x86-64 (Intel/AMD)**. No registry login, environment variables, host-IP configuration, or token URL is required.
 
-Copy [compose.published.yaml](compose.published.yaml) to a directory on your Docker host. No source checkout or local image build is required. **Only if using a private package**, log in with a GitHub account that can access it, using a **personal access token (classic)** with `read:packages` as the password ([GitHub's registry authentication instructions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry)). Skip this command for the public image:
+In Portainer's Docker Standalone environment, choose **Stacks → Add stack → Web editor**, name the stack `chapterise`, and paste [compose.portainer.yaml](compose.portainer.yaml):
 
-```bash
-docker login ghcr.io -u YOUR_GITHUB_USERNAME
+```yaml
+services:
+  chapterise:
+    image: ghcr.io/chkn-11/chapterise:latest
+    init: true
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - projects:/data
+      - models:/models
+
+volumes:
+  projects:
+  models:
 ```
 
-For a server accessed over your LAN, create a `.env` file beside the Compose file, replacing the example address with your Docker server's actual IP address or hostname:
+Deploy, then open **`http://YOUR-SERVER:8765/`**. On the same computer, use **`http://localhost:8765/`**. The address stays the same across restarts; there is no need to inspect logs.
 
-```dotenv
-CHAPTERISE_BIND=0.0.0.0
-CHAPTERISE_PORT=8765
-CHAPTERISE_PUBLIC_ORIGIN=http://192.168.1.50:8765
-```
+To update an existing Portainer stack, remove its `CHAPTERISE_PUBLIC_ORIGIN` environment entry, use the YAML above, and update/redeploy with the option to pull the latest image enabled. Keep the stack name and named volumes to preserve projects and models.
 
-For use on the same computer, omit `.env`; the default is loopback-only at `http://127.0.0.1:8765`. If you change the published port, include it in `CHAPTERISE_PUBLIC_ORIGIN` too. The internal container port remains 8765.
+For Docker Compose without Portainer, copy [compose.published.yaml](compose.published.yaml) to the Docker host and run:
 
 ```bash
 docker compose -f compose.published.yaml pull
 docker compose -f compose.published.yaml up -d
-docker compose -f compose.published.yaml logs --tail=20 chapterise
 ```
 
-Open the complete URL printed in the logs, including its session token. Projects and downloaded speech models persist in named volumes. To update, rerun `pull` and `up -d` after current jobs finish; the session URL changes when the container restarts. To pin a build, replace `:latest` in the Compose file with its `:sha-...` tag.
+The container uses port **8765** internally. To publish another port, change just the mapping, e.g. `"8877:8765"`, and open `http://YOUR-SERVER:8877/`. The app uses the browser request's host and port automatically.
 
-The app is intended for a trusted LAN or VPN. The URL token grants access to your audio/projects; keep it private. For HTTPS through a reverse proxy, set the public origin to the exact HTTPS address and have the proxy preserve its `Host` header. Serve the app at the domain root, preserve the token path, and allow large audio uploads. Forwarded headers do not override the configured origin.
+Projects, uploaded audio, reviews, EPUB text, transcripts, checkpoints, and exports persist in the `projects` volume at `/data`. Downloaded speech models persist in `models` at `/models`. Use **Download exported audio** to save finished files through your browser. The first transcription downloads its chosen model; subsequent runs reuse it.
 
-### Portainer (all settings in the stack)
-
-For a Docker Standalone environment, go to **Stacks → Add stack → Web editor**, name the stack `chapterise`, and paste [compose.portainer.yaml](compose.portainer.yaml). Replace `192.168.1.50` with your Docker host's LAN IP or hostname. All settings are in the YAML; no `.env` file is needed. Select **Deploy the stack**, then open the Chapterise container's **Logs** and use the complete URL printed there, including the session token. A public GHCR image needs no registry credentials in Portainer. Projects and models stay in named volumes across stack updates; keep those volumes when redeploying.
-
-For maintainers publishing a fork: package visibility is separate from repository visibility. Set the package to Public in GitHub's package settings to enable anonymous pulls.
+**Access:** the root UI has no login or secret URL. Anyone who can reach the published port can use the app and access its projects. Use it on a trusted LAN/VPN; use an authenticated reverse proxy if exposing it more widely. Cross-origin browser writes are rejected. A reverse proxy should preserve the browser's `Host` header, serve the app at the domain root, and allow large audio uploads. HTTP and HTTPS origins with the same host/port are accepted by default so TLS termination works without extra configuration. `--public-origin` (or `CHAPTERISE_PUBLIC_ORIGIN`) remains an optional restriction to one exact origin; it is not needed for normal deployment. Forwarded headers do not override these checks.
 
 ### Build locally
 
@@ -46,36 +50,26 @@ With Docker Engine/Desktop and Docker Compose installed, run from this repositor
 
 ```bash
 docker compose up --build -d
-docker compose logs chapterise
 ```
 
-Open the complete `http://127.0.0.1:8765/<token>/` URL printed in the logs, including the random token. The bare port URL is intentionally rejected. Upload your audiobook and EPUB through the browser. The image includes Python, FFmpeg, and CPU transcription support; no host Python environment is needed. Building requires internet access, and the chosen speech model downloads on first use.
-
-The container runs as a non-root user. It listens on all container interfaces, while Compose publishes the port only on the host's loopback interface, following [Docker's local port-publishing guidance](https://docs.docker.com/engine/network/port-publishing/). Existing token, Host, and Origin checks remain enabled. Use the printed `127.0.0.1` URL rather than `localhost`.
-
-Two named volumes retain your data: `projects` at `/data` holds uploads, reviews, EPUB text, transcripts, checkpoints, and exports; `models` at `/models` holds downloaded speech models. Neither books nor local caches enter the image/build context. Use **Download exported audio** to copy finished audio out through the browser.
+Open `http://localhost:8765/`. The image includes Python, FFmpeg, and CPU transcription support and runs as a non-root user. No host Python environment is needed. Neither books nor local caches enter the build context.
 
 ```bash
 docker compose stop       # Stop after active exports finish
 docker compose start
-docker compose logs chapterise
 ```
 
-A restart generates a new session URL; read the latest log entry. Saved reviews and completed transcription chunks remain, but jobs do not restart automatically. Choose the same model/language to resume. `docker compose down` also keeps the named volumes; adding `--volumes` deletes them and their saved work.
+Saved reviews and completed transcription chunks remain, but jobs do not restart automatically. Choose the same model/language to resume. `docker compose down` keeps the named volumes; adding `--volumes` deletes them and their saved work.
 
-To use another port, set `CHAPTERISE_PORT` consistently for Compose commands (or export it in your shell):
-
-```bash
-CHAPTERISE_PORT=8877 docker compose up --build -d
-```
-
-Compose changes both the application and published port so the printed URL and request checks stay correct. With plain Docker, the equivalent default setup is:
+With plain Docker:
 
 ```bash
 docker build -t chapterise:local .
-docker run --rm --init -p 127.0.0.1:8765:8765 \
+docker run --rm --init -p 8765:8765 \
   -v chapterise-projects:/data -v chapterise-models:/models chapterise:local
 ```
+
+GitHub Actions builds and tests each published image, including a root-URL check with a remapped host port and no extra environment variables. Besides `latest`, images have a `sha-<full-commit-id>` tag for pinning a specific build.
 
 **Existing desktop projects:** Docker starts with a separate workspace. Upload the original audio and EPUB, then **Load review JSON** to restore saved markers and transcripts without retranscribing. Run **Find EPUB chapters** again if you need proposals. Desktop project manifests contain absolute paths and source fingerprints, so copying `.chapterise-data` directly into a container is not a portable migration. Existing host model caches are also separate from the container's model volume.
 
@@ -87,7 +81,7 @@ Install the optional speech recognizer using **Transcription setup** below, then
 .venv/bin/python app.py
 ```
 
-1. Open the printed local URL. Choose an **Audiobook** and its **Matching book (.epub)**. Alternatively, use `.venv/bin/python app.py "/path/book.m4b" --epub "/path/book.epub"` to read existing files without copying the audiobook.
+1. Open `http://localhost:8765/`. Choose an **Audiobook** and its **Matching book (.epub)**. Alternatively, use `.venv/bin/python app.py "/path/book.m4b" --epub "/path/book.epub"` to read existing files without copying the audiobook.
 2. Choose a speech model and language, then **Find EPUB chapters**. The app transcribes the recording locally, reads the EPUB contents list, and searches for matching passages in chapter order. An existing transcript is reused; use **Generate searchable transcript** first if you want to change its model or language.
 3. Each proposal shows its timestamp, evidence from the book and audio, and **Strong opening match**, **Needs review**, or **Unmatched**. Preview plays exactly from the proposed timestamp for ten seconds. **Use this marker** adds it to the review; **Locate manually** fills the manual chapter editor. Accepted markers support the existing timestamp editor, ±15-second slider, removal, and undo.
 4. Review the selected markers, approve them, and export. Uploads export to the local project storage; **Download exported audio** saves the verified result through your browser. Source audio is never altered, and suggestions never export themselves.
@@ -116,7 +110,7 @@ Requires **Python 3.10+** and **FFmpeg** (`ffmpeg` and `ffprobe` on your PATH). 
 python3 app.py "/path/to/book.m4a"
 ```
 
-Open the `http://127.0.0.1:...` URL printed in the terminal. Keep the terminal running while reviewing. Stop with Ctrl+C after export finishes.
+Open `http://localhost:8765/`. Keep the terminal running while reviewing. Stop with Ctrl+C after export finishes.
 
 1. Click **Scan for pauses**. Defaults: at least 2 seconds below −35 dB, with suggested markers at least 60 seconds apart.
 2. **Preview** each candidate from its exact current marker timestamp for the next 10 seconds (or until the audio ends). Use its slider to adjust up to **±15 seconds from the original position**, with millisecond steps using the arrow keys. The timestamp and offset update as you drag; preview and export use the adjusted time. Sliders stop at the audio boundaries and the opening chapter stays at zero. You can also check or uncheck markers, type timestamps, edit titles, or manually add missing chapters (see below). Longer pauses get selection priority; candidates too close to other selected markers are still listed unchecked. Leading and trailing silence are ignored.
@@ -138,7 +132,7 @@ The default output is `book.chaptered.m4a`, beside the original. An existing out
 python3 app.py "/path/to/book.m4a" --output "/path/to/book.chaptered.m4b"
 ```
 
-Use `--port 8765` if you want a fixed port. The server only binds to this computer's loopback address; use the exact URL it prints.
+Port 8765 is the default. Use `--port 8877` to override it if needed. Outside Docker, the server binds to loopback by default; use `--host 0.0.0.0` to allow access from other computers.
 
 **Save review JSON** downloads your current choices, including each slider's original position, so you can restore them with **Load review JSON**. Older review files use their saved timestamps as the slider origins. The automatic local project save also preserves chapter edits across refreshes. Imported review JSON is checked against filename and duration, not a full audio fingerprint; load it only for the original recording. An export always requires approval, including after loading a review.
 

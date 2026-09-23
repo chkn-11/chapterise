@@ -7,7 +7,6 @@ import json
 import math
 from pathlib import Path
 import re
-import secrets
 import shutil
 import subprocess
 import tempfile
@@ -427,21 +426,30 @@ def validate_public_origin(value):
     return f'{parsed.scheme}://{hostname}{suffix}'
 
 
-def handler_for(session, token, public_origin=None):
+def handler_for(session, token=None, public_origin=None):
     public_origin = validate_public_origin(public_origin)
     class Handler(BaseHTTPRequestHandler):
         def browser_origin(self):
-            return public_origin or f'http://127.0.0.1:{self.server.server_port}'
+            hosts = self.headers.get_all('Host', [])
+            if len(hosts) != 1 or not hosts[0]:
+                raise ValueError('Expected one Host header.')
+            requested = validate_public_origin('http://' + hosts[0])
+            if public_origin and urlsplit(public_origin).netloc != urlsplit(requested).netloc:
+                raise ValueError('Unexpected request host.')
+            return public_origin or requested
 
         def log_message(self, *_):
-            pass  # Don't log the private session URL.
+            pass
 
         def route(self):
-            prefix = f"/{token}/"
+            prefix = f"/{token}/" if token else '/'
             path = urlsplit(self.path).path
-            host = self.headers.get("Host", "")
-            expected = urlsplit(self.browser_origin()).netloc
-            if host != expected or not path.startswith(prefix):
+            try:
+                self.browser_origin()
+            except ValueError:
+                self.send_error(403)
+                return None
+            if not path.startswith(prefix):
                 self.send_error(403)
                 return None
             return path[len(prefix):]
@@ -597,8 +605,14 @@ def handler_for(session, token, public_origin=None):
                 return
             try:
                 origin = self.headers.get("Origin")
-                if origin and origin != self.browser_origin():
-                    raise ValueError("Unexpected request origin.")
+                if origin:
+                    parsed_origin = validate_public_origin(origin)
+                    expected = self.browser_origin()
+                    if (not parsed_origin or (public_origin and parsed_origin != expected) or
+                            urlsplit(parsed_origin).netloc != urlsplit(expected).netloc):
+                        raise ValueError("Unexpected request origin.")
+                if self.headers.get('Sec-Fetch-Site') == 'cross-site':
+                    raise ValueError('Unexpected cross-site request.')
                 if route in {'api/upload/audio', 'api/upload/epub'}:
                     self.upload(route)
                     return
@@ -674,11 +688,11 @@ def main():
     parser.add_argument("--epub", type=Path, help="Optional matching EPUB")
     parser.add_argument("--workspace", type=Path, default=STATIC.parent / ".chapterise-data", help="Local project and transcription storage")
     parser.add_argument("--output", type=Path, help="New output path; defaults to NAME.chaptered.m4a")
-    parser.add_argument("--port", type=int, default=0, help="Local port; default chooses a free port")
+    parser.add_argument("--port", type=int, default=8765, help="Listen port (default: 8765)")
     parser.add_argument("--host", choices=("127.0.0.1", "0.0.0.0"), default="127.0.0.1",
                         help="Listen address; use 0.0.0.0 inside Docker")
     parser.add_argument("--public-origin", default=os.environ.get('CHAPTERISE_PUBLIC_ORIGIN'),
-                        help="Browser origin, e.g. http://192.168.1.50:8765; defaults to local loopback")
+                        help="Optional restriction to one browser origin; otherwise accept the request host")
     args = parser.parse_args()
     for binary in ("ffmpeg", "ffprobe"):
         if not shutil.which(binary):
@@ -700,11 +714,12 @@ def main():
             session.book = read_epub(args.epub.expanduser())
             session.alignment = None
             session.persist()
-        token = secrets.token_urlsafe(24)
-        server = ThreadingHTTPServer((args.host, args.port), handler_for(session, token, public_origin))
+        server = ThreadingHTTPServer((args.host, args.port), handler_for(session, public_origin=public_origin))
     except (ValueError, OSError) as error:
         parser.error(str(error))
-    print(f"Open {public_origin or f'http://127.0.0.1:{server.server_port}'}/{token}/", flush=True)
+    print(f"Open {public_origin or f'http://localhost:{server.server_port}'}/", flush=True)
+    if args.host == '0.0.0.0' and not public_origin:
+        print(f"On another computer, open http://<server-address>:{server.server_port}/", flush=True)
     print(f"Projects: {session.workspace}\nPress Ctrl+C to stop. Completed transcription chunks are saved.", flush=True)
     try:
         server.serve_forever()

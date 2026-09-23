@@ -213,7 +213,7 @@ class AudioTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def test_container_listen_address_keeps_private_url_checks(self):
+    def test_root_entry_accepts_request_host_and_blocks_cross_origin_writes(self):
         process = subprocess.Popen([
             sys.executable, str(Path(__file__).resolve().parents[1] / 'app.py'),
             '--host', '0.0.0.0', '--port', '0', '--workspace', str(self.directory / 'container-projects'),
@@ -222,7 +222,7 @@ class AudioTests(unittest.TestCase):
             lines = queue.Queue()
             threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True).start()
             line = lines.get(timeout=15)
-            self.assertTrue(line.startswith('Open http://127.0.0.1:'), line)
+            self.assertTrue(line.startswith('Open http://localhost:'), line)
             from urllib.parse import urlsplit
             url = urlsplit(line.strip().removeprefix('Open '))
             def request(path, method='GET', headers=None, body=None):
@@ -235,8 +235,16 @@ class AudioTests(unittest.TestCase):
             code, data = request(url.path + 'api/state')
             self.assertEqual(code, 200)
             self.assertIsNone(json.loads(data)['filename'])
-            self.assertEqual(request('/')[0], 403)
-            self.assertEqual(request(url.path, headers={'Host': 'untrusted.example'})[0], 403)
+            self.assertEqual(url.path, '/')
+            self.assertEqual(request('/')[0], 200)
+            for host in ('books.local:8765', '192.168.1.50:8877', '[::1]:8765'):
+                self.assertEqual(request('/', headers={'Host': host})[0], 200)
+                for scheme in ('http', 'https'):
+                    self.assertEqual(request('/api/cancel', 'POST', {'Host': host,
+                        'Content-Type': 'application/json', 'Origin': f'{scheme}://{host}'}, '{}')[0], 200)
+            self.assertEqual(request('/', headers={'Host': 'bad host'})[0], 403)
+            self.assertEqual(request('/api/cancel', 'POST', {'Content-Type': 'application/json',
+                                 'Sec-Fetch-Site': 'cross-site'}, '{}')[0], 400)
             code, data = request(url.path + 'api/review', 'POST',
                                  {'Content-Type': 'application/json', 'Origin': 'http://untrusted.example'}, '{}')
             self.assertEqual(code, 400)
