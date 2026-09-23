@@ -30,7 +30,7 @@ def check(image):
                                 "from pathlib import Path; Path('/data/write-check').write_text('ok')"], check=True)
                 print('Published-port, startup, transcription import, and volume-write checks passed.')
                 return
-            except URLError:
+            except (URLError, ConnectionError, TimeoutError):
                 time.sleep(1)
         logs = subprocess.check_output(['docker', 'logs', container], text=True, stderr=subprocess.STDOUT)
         raise RuntimeError('Container did not become ready: ' + logs)
