@@ -6,9 +6,9 @@ A local browser tool for finding potential chapters in M4A/M4B audio using pause
 
 ### Install the published image on another computer or server
 
-The GitHub publishing workflow builds and tests `ghcr.io/chkn-11/chapterise:latest` for **Linux x86-64 (Intel/AMD)**. It also publishes a `sha-<full-commit-id>` tag for pinning a specific build. The image is private, like this repository.
+The GitHub publishing workflow builds and tests `ghcr.io/chkn-11/chapterise:latest` for **Linux x86-64 (Intel/AMD)**. It also publishes a `sha-<full-commit-id>` tag for pinning a specific build. Both the source repository and container image are public. No registry login is needed.
 
-Copy [compose.published.yaml](compose.published.yaml) to a directory on your Docker host. No source checkout or local image build is required. Log in with a GitHub account that can access the package, using a **personal access token (classic)** with `read:packages` as the password ([GitHub's registry authentication instructions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry)):
+Copy [compose.published.yaml](compose.published.yaml) to a directory on your Docker host. No source checkout or local image build is required. **Only if using a private package**, log in with a GitHub account that can access it, using a **personal access token (classic)** with `read:packages` as the password ([GitHub's registry authentication instructions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry)). Skip this command for the public image:
 
 ```bash
 docker login ghcr.io -u YOUR_GITHUB_USERNAME
@@ -33,6 +33,12 @@ docker compose -f compose.published.yaml logs --tail=20 chapterise
 Open the complete URL printed in the logs, including its session token. Projects and downloaded speech models persist in named volumes. To update, rerun `pull` and `up -d` after current jobs finish; the session URL changes when the container restarts. To pin a build, replace `:latest` in the Compose file with its `:sha-...` tag.
 
 The app is intended for a trusted LAN or VPN. The URL token grants access to your audio/projects; keep it private. For HTTPS through a reverse proxy, set the public origin to the exact HTTPS address and have the proxy preserve its `Host` header. Serve the app at the domain root, preserve the token path, and allow large audio uploads. Forwarded headers do not override the configured origin.
+
+### Portainer (all settings in the stack)
+
+For a Docker Standalone environment, go to **Stacks → Add stack → Web editor**, name the stack `chapterise`, and paste [compose.portainer.yaml](compose.portainer.yaml). Replace `192.168.1.50` with your Docker host's LAN IP or hostname. All settings are in the YAML; no `.env` file is needed. Select **Deploy the stack**, then open the Chapterise container's **Logs** and use the complete URL printed there, including the session token. A public GHCR image needs no registry credentials in Portainer. Projects and models stay in named volumes across stack updates; keep those volumes when redeploying.
+
+For maintainers publishing a fork: package visibility is separate from repository visibility. Set the package to Public in GitHub's package settings to enable anonymous pulls.
 
 ### Build locally
 

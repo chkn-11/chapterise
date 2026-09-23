@@ -30,6 +30,7 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose -f compose.published.yaml config --quiet
+          docker compose -f compose.portainer.yaml config --quiet
       - name: Build Intel/AMD image
         run: docker build --platform linux/amd64 --tag "$IMAGE:latest" --tag "$IMAGE:sha-$GITHUB_SHA" .
       - name: Test inside image
