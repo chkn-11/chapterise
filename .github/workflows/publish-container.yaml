@@ -3,6 +3,7 @@ name: Publish container
 on:
   push:
     branches: [main]
+    tags: ['v[0-9]*']
   workflow_dispatch:
 
 permissions:
@@ -14,7 +15,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -26,6 +27,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Select published tag
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+(\.[0-9]+){0,2}$ ]] || exit 1
+            printf 'PUBLISH_TAG=%s\n' "$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          else
+            printf 'PUBLISH_TAG=latest\n' >> "$GITHUB_ENV"
+          fi
       - name: Validate Compose configurations
         run: |
           docker compose config --quiet
@@ -44,9 +53,10 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker tag "$IMAGE:latest" "$IMAGE:$PUBLISH_TAG"
           docker push "$IMAGE:sha-$GITHUB_SHA"
-          docker push "$IMAGE:latest"
-          docker manifest inspect "$IMAGE:latest" > /dev/null
+          docker push "$IMAGE:$PUBLISH_TAG"
+          docker manifest inspect "$IMAGE:$PUBLISH_TAG" > /dev/null
       - name: Log out
         if: always()
         run: docker logout ghcr.io

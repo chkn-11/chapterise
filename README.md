@@ -1,19 +1,48 @@
 # Chapterise
 
-A local browser tool for finding potential chapters in M4A/M4B audio using pauses or a matching EPUB, reviewing the proposed breaks, and writing approved chapter metadata into a new file.
+Turn an M4A or M4B audiobook into a chaptered file using pause detection, a matching EPUB, or manually placed markers. Listen, adjust, and approve the result in your browser before exporting.
 
-## Docker
+> [!WARNING]
+> **This project was vibe coded with substantial AI assistance.** It has automated tests, but bugs, incorrect transcripts, and inaccurate chapter suggestions are still possible. Keep your original files and backups, listen to the proposed boundaries, and check the exported file in your audiobook player. Treat the results as suggestions, not an authoritative chapter map.
 
-### Portainer / another Docker host
+Chapterise runs on your computer or Docker server. Audio and EPUB text are processed there rather than sent to a cloud AI service. The first transcription downloads a speech model; no account, API key, or paid AI service is required.
 
-The public image `ghcr.io/chkn-11/chapterise:latest` supports **Linux x86-64 (Intel/AMD)**. No registry login, environment variables, host-IP configuration, or token URL is required.
+## TL;DR — what each feature does
 
-In Portainer's Docker Standalone environment, choose **Stacks → Add stack → Web editor**, name the stack `chapterise`, and paste [compose.portainer.yaml](compose.portainer.yaml):
+| Feature | What it does |
+| --- | --- |
+| [Uploads and projects](#1-open-or-upload-an-audiobook) | Open an M4A/M4B, optionally add its EPUB, and return to saved work later. |
+| [Pause detection](#2-find-chapters-from-pauses) | Suggest chapter breaks where the audio becomes quiet. No speech model needed. |
+| [Speech-to-text](#3-generate-and-search-a-transcript) | Transcribe the recording locally and show nearby speech beside each marker. |
+| [Transcript search](#3-generate-and-search-a-transcript) | Find a word or phrase, preview it, and use its position for a manual chapter. |
+| [EPUB matching](#4-find-chapters-from-an-epub) | Match chapter text against recognized speech and propose boundaries with evidence. |
+| [Omitted sections](#5-handle-omitted-epub-sections) | Mark an unmatched prologue, title page, or other section as absent from this recording. |
+| [Intro and credits](#6-review-audio-only-intros-and-outros) | Suggest audio-only sections when production/cast announcements are recognized. |
+| [Preview and precision](#7-preview-adjust-rename-and-select-markers) | Play ten seconds from the marker; adjust with a ±15-second slider or typed timestamp. |
+| [Manual chapters](#8-add-a-missing-chapter) | Place a missing break anywhere between the beginning and end of the recording. |
+| [Remove and undo](#9-remove-or-restore-a-marker) | Remove a chapter boundary without deleting any audio; undo the last removal. |
+| [Saved reviews](#10-save-back-up-and-restore-your-review) | Autosave the project and download/import review JSON containing markers and transcripts. |
+| [Pause and resume](#11-pause-and-resume-long-processing) | Reuse completed transcription chunks after pausing or restarting. |
+| [Approved export](#12-approve-export-and-download) | Write selected chapters into a new file, verify them, then download the result. |
+
+**Fastest route with an EPUB:** upload audio → upload EPUB → **Find EPUB chapters** → preview/accept/adjust → approve → export.
+
+**Without an EPUB:** upload audio → **Scan for pauses**, transcribe, or add markers manually → review → approve → export.
+
+## Install with Docker or Portainer
+
+Published image: **`ghcr.io/chkn-11/chapterise:v1`**
+
+The public image supports **Linux x86-64 (Intel/AMD)** and includes Python, FFmpeg, and CPU speech recognition. No registry login or host Python installation is needed. ARM and GPU images are not provided in this release.
+
+### Sample Compose file
+
+Everything needed for deployment is in this file. No `.env`, server-IP setting, token URL, or log inspection is required.
 
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:latest
+    image: ghcr.io/chkn-11/chapterise:v1
     init: true
     restart: unless-stopped
     ports:
@@ -27,159 +56,315 @@ volumes:
   models:
 ```
 
-Deploy, then open **`http://YOUR-SERVER:8765/`**. On the same computer, use **`http://localhost:8765/`**. The address stays the same across restarts; there is no need to inspect logs.
+**Portainer (Docker Standalone):**
 
-To update an existing Portainer stack, remove its `CHAPTERISE_PUBLIC_ORIGIN` environment entry, use the YAML above, and update/redeploy with the option to pull the latest image enabled. Keep the stack name and named volumes to preserve projects and models.
+1. Open **Stacks → Add stack → Web editor**.
+2. Name the stack `chapterise` and paste the YAML above, or use [compose.portainer.yaml](compose.portainer.yaml).
+3. Select **Deploy the stack**.
+4. Open **`http://YOUR-SERVER:8765/`** in your browser. On the same computer, use **`http://localhost:8765/`**.
 
-For Docker Compose without Portainer, copy [compose.published.yaml](compose.published.yaml) to the Docker host and run:
+**Docker Compose:**
+
+1. Save the example as `compose.yaml` in its own directory. Alternatively, use [compose.published.yaml](compose.published.yaml) with `-f compose.published.yaml` in your commands.
+2. Run:
+
+   ```bash
+   docker compose pull
+   docker compose up -d
+   ```
+
+3. Open `http://YOUR-SERVER:8765/` or `http://localhost:8765/`.
+
+Port 8765 is the app's default. If it is occupied on your host, change only the mapping to `"8877:8765"` and browse to port 8877. The app automatically uses the host/port from the browser request.
+
+### Versions, updates, and persistent storage
+
+| Image tag | Purpose |
+| --- | --- |
+| `v1` | This release; ordinary pushes to `main` do not advance this tag. |
+| `latest` | The newest successfully published build from `main`. |
+| `sha-<full-commit-id>` | A build associated with a particular source commit. |
+
+For an exact image artifact, use its registry digest (`image@sha256:...`).
+
+To update, change the image tag if desired, then pull and redeploy after active exports finish. In Portainer, enable the option to pull the image when updating the stack. Keep the existing stack name and volumes. If migrating from an early setup, remove its `CHAPTERISE_PUBLIC_ORIGIN` environment entry unless you deliberately want to restrict access to that one address.
+
+- `projects` is mounted at `/data`: uploads, reviews, EPUB text, transcripts, completed transcription chunks, and exported audio.
+- `models` is mounted at `/models`: downloaded speech models, reused between runs.
+- Stopping/recreating the container preserves these volumes. `docker compose down` keeps them; **`docker compose down --volumes` deletes them and their contents**.
+- Back up both the project volume and your original files. A review JSON backup does not contain the audio or EPUB itself.
+
+> [!IMPORTANT]
+> The web UI has no login. Anyone who can reach the published port can use the app and access its projects. Use a trusted LAN/VPN, or put an authenticated reverse proxy in front of it. The Compose example publishes the port on the Docker host's interfaces.
+
+A reverse proxy should serve the app at the domain root, preserve the browser's `Host` header, and allow large uploads. HTTP/HTTPS requests with matching host and port are supported without special configuration; unrelated browser origins are rejected for writes. Forwarded headers do not override the checks. An explicit `--public-origin` restriction remains available for advanced deployments.
+
+## Detailed usage
+
+### 1. Open or upload an audiobook
+
+**What it does:** creates a project for a recording and loads any existing chapter metadata into the review.
+
+1. Under **Open a chaptering project**, choose **Audiobook (.m4b / .m4a)**.
+2. Wait for the upload to complete. The file is copied to the machine running Chapterise; for Docker, that is your Docker host, not necessarily your browser's computer.
+3. Check the filename and duration in the player.
+4. If you want EPUB matching, choose the corresponding file under **Matching book (.epub)**. Pause detection, transcription, and manual editing work without an EPUB.
+5. To resume an existing project, select it under **Saved project** and click **Open saved project**. Avoid uploading another copy merely to reopen existing work.
+
+Uploads allow up to 32 GB for audio and 100 MB for an EPUB. Allow disk space for the uploaded source, processing data, and exported output. Existing chapter markers are included; an opening marker at zero is inserted when needed. That opening marker is required and cannot be removed.
+
+Use the EPUB for the same book and edition where possible. The app does not remove DRM or decrypt protected ebooks.
+
+### 2. Find chapters from pauses
+
+**What it does:** uses FFmpeg's silence detection to suggest markers in the middle of quiet gaps. It does not understand whether a gap is a real chapter break.
+
+1. In **Find possible breaks**, set the detection controls:
+
+   | Control | Default | Effect |
+   | --- | --- | --- |
+   | Minimum pause | 2 seconds | Quiet gaps shorter than this are ignored. Increase it to reduce suggestions. |
+   | Silence threshold | −35 dB | Audio below this level counts as quiet. Moving towards zero detects more gaps, but can also treat quiet speech as silence. |
+   | Suggested chapter spacing | 60 seconds | Controls which suggestions are initially selected. Closer candidates can remain listed unchecked. |
+
+2. Click **Scan for pauses** and wait for the scan to finish.
+3. Review the resulting markers, listen to their previews, and keep or move the useful ones.
+4. Uncheck or remove false positives. You can add missing breaks manually.
+
+Leading and trailing silence are ignored. Longer pauses receive selection priority where suggestions conflict. Chapter spacing is a selection aid, not a restriction on your final export.
+
+A rescan replaces pause suggestions, including their previous adjustments, while preserving manual, EPUB, and existing-file markers. Save a review JSON before rescanning if you want a backup of your current decisions. Music beds, effects, and dialogue pauses make silence detection less reliable for dramatized audiobooks.
+
+### 3. Generate and search a transcript
+
+**What it does:** turns speech into timestamped text using local [faster-whisper](https://github.com/SYSTRAN/faster-whisper), supplies text beside markers, and enables literal text search.
+
+1. Under **Search the spoken audio**, choose a model:
+
+   | Model | Tradeoff |
+   | --- | --- |
+   | Tiny | Fastest, with lower recognition accuracy. |
+   | Base | Default balance of speed and accuracy. |
+   | Small | More demanding on CPU/memory, with potentially better recognition. |
+
+2. Leave **Language code** blank for automatic detection, or enter a code such as `en` for English.
+3. Click **Generate searchable transcript**. First use downloads the selected model; later runs reuse the model cache.
+4. When complete, read the recognized speech under marker titles or type a word/phrase into **Search transcript**.
+5. Click a search result to preview ten seconds from that passage's timestamp and fill the manual chapter time.
+6. If you found a missing boundary, adjust that time and use **Add chapter break**.
+
+Search is case-insensitive, literal, and limited to text within individual transcript passages. It is not a semantic search engine. The UI shows the first 100 matching passages; narrow your query if there are more.
+
+Displayed sentences can extend beyond the ten-second preview because they use passage boundaries. Recognition can omit or invent words, especially with music or overlapping voices. Transcription does not add, remove, or rename chapter markers. Editing/scanning/export wait while the background job runs.
+
+Docker includes transcription support. For a direct Python installation, see [running without Docker](#run-without-docker).
+
+### 4. Find chapters from an EPUB
+
+**What it does:** reads the ebook's chapter structure and looks for corresponding phrases in the audiobook transcript, keeping proposed matches in book order.
+
+1. Upload/open the audiobook, then upload its matching EPUB.
+2. Check the displayed book title, number of contents entries, and any parsing warnings.
+3. Choose the speech model/language under **Search the spoken audio**.
+4. Click **Find EPUB chapters**. If there is no transcript, the app generates one first. If a transcript already exists, it is reused.
+5. For each proposal, compare **Book passage** with **Recognized speech**, read its reason, and click **Preview match**.
+6. Click **Use this marker** when it is useful. The proposal becomes a selected marker in **Review your chapters**, where you can refine its time/title.
+7. Use **Locate manually** when the proposed time is uncertain or no match was found. This fills the manual editor; it does not insert a marker until you choose **Add chapter break**.
+
+| Label | Meaning |
+| --- | --- |
+| Strong opening match | Good text evidence near the chapter opening, with word timing. Still listen before accepting. |
+| Needs review | Partial, ambiguous, later-passage, or coarse-timing evidence. The actual start may be earlier. |
+| Unmatched | No usable ordered match was found. The section may be missing from the audio, or matching may have failed. |
+
+Confidence labels describe evidence, not calibrated probabilities. No proposals are automatically accepted or exported. A marker already at the exact proposed time must be handled in the review rather than duplicated. An Intro proposal at zero reuses the required opening marker.
+
+To change the model/language of an existing transcript, run **Generate searchable transcript** with the new settings before matching again. Rerunning matching does not overwrite your accepted chapter edits.
+
+**How it works:** EPUB 2 NCX and EPUB 3 navigation are supported, including chapter anchors within the same XHTML file. If there is no usable contents list, the parser falls back to one section per reading-order document and warns you. The matcher searches up to the first 2,400 words of each section, tolerates missing text, and enforces increasing chapter order. This is AI speech recognition plus phrase alignment, not an autonomous LLM agent.
+
+**GraphicAudio and adaptations:** narration, prologues, or entire scenes may be cut or rearranged. A clear match hundreds of words into a chapter is a navigation clue, not its verified opening. Even a strong opening-text match may come after a spoken chapter heading or introductory music.
+
+### 5. Handle omitted EPUB sections
+
+**What it does:** records that an unmatched ebook section is not part of this particular audio adaptation.
+
+1. Review an **Unmatched** proposal, such as a title page, acknowledgments, or prologue.
+2. Check the audio before assuming the section was omitted; search/recognition can miss real content.
+3. If it is absent, click **Mark not present in recording**.
+4. To revisit that decision, click **Reconsider section**.
+
+The decision is saved in the project and review JSON. It does not delete audio, remove existing chapter markers, or force later sections to match. The app does not automatically declare every unmatched section omitted.
+
+### 6. Review audio-only intros and outros
+
+**What it does:** suggests **Intro** and **Outro / credits** markers when it detects production/cast announcements outside the matched book chapters.
+
+1. Run **Find EPUB chapters**.
+2. Look for proposals labelled **Audio-only suggestion**.
+3. Preview the recognized announcements and listen around the proposed time using the player.
+4. Choose **Use this marker**, then adjust its position/title in the review if needed. Alternatively, use **Locate manually**.
+
+These suggestions always need review. Intro uses the zero-time marker. Closing credits are suggested at spoken evidence; credits music may start several seconds earlier. Music-only sections or unrecognized announcements need manual markers. The production-announcement heuristics currently recognize English phrases and depend on usable book matches to locate the recording's edges.
+
+### 7. Preview, adjust, rename, and select markers
+
+**What it does:** lets you refine the proposed boundaries before writing metadata.
+
+1. In **Review your chapters**, click **Preview** beside a marker. Playback starts at that exact marker timestamp and continues for ten seconds, or until the file ends. It does not start five seconds before the marker.
+2. Move its slider up to **15 seconds earlier or later than its original position**. The arrow keys make millisecond adjustments.
+3. For a larger change, type a start time as seconds or `HH:MM:SS.mmm`, then leave the field to apply it. The slider remains anchored to the original position; it does not reset after a typed edit.
+4. Edit the chapter title. Blank titles receive automatic `Chapter 1`, `Chapter 2`, etc. names at export.
+5. Use **Keep** to include/exclude a marker. **Select all** includes every marker; **Clear optional markers** keeps only the required opening marker selected.
+6. Preview again after adjusting and repeat until satisfied.
+
+Markers are displayed in time order. Times must be distinct and within the recording. The opening marker stays selected at zero. Any edit clears export approval, so review the final selection before approving again.
+
+### 8. Add a missing chapter
+
+**What it does:** inserts a new boundary at a manually chosen position, including between automatically discovered chapters.
+
+1. Click **Insert after…** beside a marker to start at the midpoint of the gap after it. This seeks the player and fills **New chapter start**; it does not create a marker yet.
+2. Listen and seek to the desired boundary.
+3. Click **Use playback position**, or type a time directly into **New chapter start**.
+4. Optionally fill **Chapter title**.
+5. Click **Preview this time** to check the next ten seconds.
+6. Click **Add chapter break**.
+
+The new marker is inserted in chronological order, highlighted, selected, and given the same adjustment slider as other markers. You can also start directly from the manual editor or a transcript search result. Duplicate times, zero, and the exact end of the recording are rejected for new markers.
+
+### 9. Remove or restore a marker
+
+**What it does:** removes a chapter boundary from the review without changing the audio.
+
+1. Click **Remove** beside an unwanted marker.
+2. Its audio will belong to the preceding selected chapter when you export.
+3. Click **Undo removal** if you want the last removed marker back, including its title and adjustment.
+
+Undo is a single-removal convenience, not a full history, and does not survive a page reload. A marker cannot be restored if another marker now occupies the same time. Use **Keep** instead of **Remove** when you want to retain a marker for later without exporting it. The opening marker cannot be removed.
+
+### 10. Save, back up, and restore your review
+
+**What it does:** preserves work locally and lets you move review decisions between installations.
+
+**Automatic project save:**
+
+1. Make your edits and wait for the save status to confirm they were saved.
+2. Leave the source file/project storage in place.
+3. Reopen the app; it attempts to restore the last project. Use **Saved project → Open saved project** to switch recordings.
+
+**Portable review JSON:**
+
+1. Click **Save review JSON** to download your review.
+2. Keep the original audiobook and, for matching, its EPUB separately.
+3. On the destination installation, upload/open the same recording.
+4. Click **Load review JSON** and select the saved file.
+5. Review the imported markers. Upload the matching EPUB and run **Find EPUB chapters** if you need new proposals.
+
+Review JSON includes marker titles/times/selections, original slider positions, the transcript when present, and omitted-section decisions. It does not include the audio, the EPUB, or the whole project database. The maximum imported review size is 100 MB.
+
+Imports are checked against the recording's filename and duration, not a full content hash. Use them only with the same recording. Loading JSON can restore transcripts without another speech-recognition run. Export approval is never saved and must be given again.
+
+Projects use absolute source paths and file fingerprints. Copying a desktop `.chapterise-data` directory into Docker is not a portable migration; use original files plus review JSON instead. There is one active project per running app instance, so coordinate use if multiple browsers are connected.
+
+### 11. Pause and resume long processing
+
+**What it does:** saves each completed five-minute transcription chunk so long recordings do not have to restart from zero.
+
+1. During transcription or EPUB matching, click **Pause processing**.
+2. Wait for processing to stop at a safe point. The current incomplete chunk may need to be repeated.
+3. To continue, choose the same model/language and click **Generate searchable transcript** or **Find EPUB chapters** again.
+4. After a server/container restart, reopen the saved project and start the operation again; jobs do not resume automatically.
+
+Changing the source, model, language, or transcription options uses a separate cache. A completed transcript is reused by matching. During the matching stage, pausing saves no partial match list; rerun matching using the saved transcript. Scan/export cannot be paused. Let exports finish before stopping the app.
+
+### 12. Approve, export, and download
+
+**What it does:** writes the selected chapter titles and boundaries into a new audio file, then verifies the chapter metadata before publishing it.
+
+1. Check the **Keep** selections, start times, titles, and chapter count.
+2. Confirm the destination shown under **Approve & export**.
+3. Check **I have reviewed and approve these chapter markers and titles**.
+4. Click **Export approved chapters** and wait for completion.
+5. Click **Download exported audio** to save the result through your browser.
+6. Open it in your audiobook player and check chapter navigation and playback.
+
+The selected markers replace the output file's chapter metadata; the source is left untouched. Each selected marker starts a chapter that continues to the next selected marker, or the file's end. Editing, adding, removing, or loading markers clears approval.
+
+All audio streams and attached cover images are copied without re-encoding. Common global tags are copied, but arbitrary vendor-specific MP4 atoms and non-audio/non-cover tracks are not guaranteed to survive remuxing. Transcript text is not embedded in chapter metadata.
+
+The default filename is `NAME.chaptered.m4a` or `NAME.chaptered.m4b`, beside the source. Uploaded sources and outputs live in project storage; use the download link to retrieve the export. An existing output is never overwritten. For a revised upload-based export, create a fresh project by uploading the original again and load your review JSON. For CLI use, choose a different `--output` path.
+
+Export verifies chapter count, starts, ends, and titles before making the new file available. A failed verification does not publish the output. Temporary free space of up to twice the source size may be needed in the destination directory. Browser preview plays the source; chapter display in the exported file depends on your audiobook player.
+
+## Run without Docker
+
+Basic pause detection and editing require **Python 3.10+** and **FFmpeg**, with `ffmpeg` and `ffprobe` on `PATH`. From a source checkout:
 
 ```bash
-docker compose -f compose.published.yaml pull
-docker compose -f compose.published.yaml up -d
+python3 app.py
 ```
 
-The container uses port **8765** internally. To publish another port, change just the mapping, e.g. `"8877:8765"`, and open `http://YOUR-SERVER:8877/`. The app uses the browser request's host and port automatically.
-
-Projects, uploaded audio, reviews, EPUB text, transcripts, checkpoints, and exports persist in the `projects` volume at `/data`. Downloaded speech models persist in `models` at `/models`. Use **Download exported audio** to save finished files through your browser. The first transcription downloads its chosen model; subsequent runs reuse it.
-
-**Access:** the root UI has no login or secret URL. Anyone who can reach the published port can use the app and access its projects. Use it on a trusted LAN/VPN; use an authenticated reverse proxy if exposing it more widely. Cross-origin browser writes are rejected. A reverse proxy should preserve the browser's `Host` header, serve the app at the domain root, and allow large audio uploads. HTTP and HTTPS origins with the same host/port are accepted by default so TLS termination works without extra configuration. `--public-origin` (or `CHAPTERISE_PUBLIC_ORIGIN`) remains an optional restriction to one exact origin; it is not needed for normal deployment. Forwarded headers do not override these checks.
-
-### Build locally
-
-With Docker Engine/Desktop and Docker Compose installed, run from this repository:
+Open `http://localhost:8765/` and upload a recording, or provide files directly:
 
 ```bash
-docker compose up --build -d
+python3 app.py "/path/book.m4b" --epub "/path/book.epub"
 ```
 
-Open `http://localhost:8765/`. The image includes Python, FFmpeg, and CPU transcription support and runs as a non-root user. No host Python environment is needed. Neither books nor local caches enter the build context.
-
-```bash
-docker compose stop       # Stop after active exports finish
-docker compose start
-```
-
-Saved reviews and completed transcription chunks remain, but jobs do not restart automatically. Choose the same model/language to resume. `docker compose down` keeps the named volumes; adding `--volumes` deletes them and their saved work.
-
-With plain Docker:
-
-```bash
-docker build -t chapterise:local .
-docker run --rm --init -p 8765:8765 \
-  -v chapterise-projects:/data -v chapterise-models:/models chapterise:local
-```
-
-GitHub Actions builds and tests each published image, including a root-URL check with a remapped host port and no extra environment variables. Besides `latest`, images have a `sha-<full-commit-id>` tag for pinning a specific build.
-
-**Existing desktop projects:** Docker starts with a separate workspace. Upload the original audio and EPUB, then **Load review JSON** to restore saved markers and transcripts without retranscribing. Run **Find EPUB chapters** again if you need proposals. Desktop project manifests contain absolute paths and source fingerprints, so copying `.chapterise-data` directly into a container is not a portable migration. Existing host model caches are also separate from the container's model volume.
-
-## EPUB-assisted chaptering
-
-Install the optional speech recognizer using **Transcription setup** below, then start the upload interface:
-
-```bash
-.venv/bin/python app.py
-```
-
-1. Open `http://localhost:8765/`. Choose an **Audiobook** and its **Matching book (.epub)**. Alternatively, use `.venv/bin/python app.py "/path/book.m4b" --epub "/path/book.epub"` to read existing files without copying the audiobook.
-2. Choose a speech model and language, then **Find EPUB chapters**. The app transcribes the recording locally, reads the EPUB contents list, and searches for matching passages in chapter order. An existing transcript is reused; use **Generate searchable transcript** first if you want to change its model or language.
-3. Each proposal shows its timestamp, evidence from the book and audio, and **Strong opening match**, **Needs review**, or **Unmatched**. Preview plays exactly from the proposed timestamp for ten seconds. **Use this marker** adds it to the review; **Locate manually** fills the manual chapter editor. Accepted markers support the existing timestamp editor, ±15-second slider, removal, and undo.
-4. Review the selected markers, approve them, and export. Uploads export to the local project storage; **Download exported audio** saves the verified result through your browser. Source audio is never altered, and suggestions never export themselves.
-
-This first version combines AI speech recognition with phrase alignment; it does not use an LLM or a paid agent service. EPUB 2 NCX and EPUB 3 navigation are supported, including multiple chapter anchors in one XHTML file. Without usable navigation, it falls back to spine documents and shows a warning. Encrypted/DRM books are not supported.
-
-Adaptations may omit the title page, acknowledgments, prologue, or other sections. An unmatched section is not proof of an omission: listen/check, then choose **Mark not present in recording**. **Reconsider section** reverses that decision. These decisions survive project restarts and are included in review JSON; they do not remove audio or chapter markers.
-
-The matcher also suggests **Intro** and **Outro / credits** when it finds production and cast announcements outside the matched book chapters. These are labelled **Audio-only suggestions**, always require review, and are never inserted automatically. Intro reuses the required zero-time marker. Closing-credit suggestions start at spoken evidence; adjust earlier if credits music begins first. Quiet music-only intros/outros and unrecognized announcements still need manual markers. These heuristics currently recognize English production-credit phrases.
-
-**GraphicAudio and adaptations:** music, overlapping voices, omitted narration, rearranged scenes, and changed wording can reduce matches. The matcher searches the first 2,400 words of each section using shared phrases, tolerates gaps, and enforces increasing chapter order. Confidence labels describe evidence, not calibrated probabilities. A later passage is explicitly flagged with its word offset; it is a navigation clue and may be well after the true chapter start. Unmatched sections remain visible for manual review. Even a strong match can miss a spoken heading or introductory music—listen and adjust before accepting.
-
-### Saved projects and resume
-
-Projects, transcripts, EPUB text, and uploaded audio are kept in `.chapterise-data/` beside the app (excluded from Git). Use `--workspace /path/to/projects` to choose another location. Starting without a file reopens the last project; the **Saved project** menu switches between recordings. CLI source files stay in their original location and must remain available. Uploads make a local copy, so allow enough disk space for both the source and export (limits: 32 GB audio / 100 MB EPUB).
-
-Chapter edits save automatically after a short delay; check the save status before closing. Export approval is never saved. **Save review JSON** remains available as a portable backup. Projects use the source path, size, modification time, and inode to detect changed source files.
-
-Speech recognition saves each completed five-minute chunk. **Pause processing** stops transcription/matching at its next safe point; the current incomplete chunk may need to run again. Resume with the same operation, model, and language. Closing the server also retains completed chunks. Changing model/language creates a separate cache. Scanning and export cannot be paused; let export finish before stopping the server. No audio or book text is sent to a cloud service; the initial speech model download needs internet access.
-
-## Run
-
-Requires **Python 3.10+** and **FFmpeg** (`ffmpeg` and `ffprobe` on your PATH). Pause detection and chapter editing need no Python packages. Optional transcription setup is below. Run the following commands from the Chapterise repository directory.
-
-```bash
-python3 app.py "/path/to/book.m4a"
-```
-
-Open `http://localhost:8765/`. Keep the terminal running while reviewing. Stop with Ctrl+C after export finishes.
-
-1. Click **Scan for pauses**. Defaults: at least 2 seconds below −35 dB, with suggested markers at least 60 seconds apart.
-2. **Preview** each candidate from its exact current marker timestamp for the next 10 seconds (or until the audio ends). Use its slider to adjust up to **±15 seconds from the original position**, with millisecond steps using the arrow keys. The timestamp and offset update as you drag; preview and export use the adjusted time. Sliders stop at the audio boundaries and the opening chapter stays at zero. You can also check or uncheck markers, type timestamps, edit titles, or manually add missing chapters (see below). Longer pauses get selection priority; candidates too close to other selected markers are still listed unchecked. Leading and trailing silence are ignored.
-3. Check the approval box, then **Export approved chapters**. Editing a marker clears approval.
-
-To add a missing chapter, use **Add a missing chapter** in the review section:
-
-- Click **Insert after…** beside an existing marker to seek to the midpoint of the gap after it and fill the new chapter time. This only prepares a position; it does not add a marker yet.
-- Listen and seek using the audio player, then click **Use playback position** to capture the exact spot. Alternatively, type seconds or `HH:MM:SS.mmm` directly. **Preview this time** starts at that exact time and plays the next 10 seconds without changing your entered time.
-- Optionally enter a title, then click **Add chapter break**. It is inserted in chronological order, highlighted, and selected for export. It gets the same ±15-second adjustment slider as detected markers. Uncheck it to exclude it.
-
-Manual chapters work before or after scanning and are included in saved reviews and approved exports. Adding one clears approval. A new scan replaces pause suggestions while preserving manual, EPUB, and existing chapter markers.
-
-**Remove** deletes a marker from the review. Its audio becomes part of the preceding chapter in the approved export; no audio is deleted. **Undo removal** restores the last deleted marker, including its title and adjustment. Removal and undo clear export approval. The opening chapter at zero is required and cannot be removed. Rescanning restores detected markers; save your review to retain removals.
-
-The default output is `book.chaptered.m4a`, beside the original. An existing output is never overwritten. To choose another output, including M4B:
-
-```bash
-python3 app.py "/path/to/book.m4a" --output "/path/to/book.chaptered.m4b"
-```
-
-Port 8765 is the default. Use `--port 8877` to override it if needed. Outside Docker, the server binds to loopback by default; use `--host 0.0.0.0` to allow access from other computers.
-
-**Save review JSON** downloads your current choices, including each slider's original position, so you can restore them with **Load review JSON**. Older review files use their saved timestamps as the slider origins. The automatic local project save also preserves chapter edits across refreshes. Imported review JSON is checked against filename and duration, not a full audio fingerprint; load it only for the original recording. An export always requires approval, including after loading a review.
-
-## Transcription setup
-
-Install the optional [faster-whisper](https://github.com/SYSTRAN/faster-whisper) speech recognizer in a virtual environment (Python 3.11–3.14 recommended for available dependency wheels):
+For speech recognition, create a virtual environment and install the optional dependencies. Python 3.12 matches the published container:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-transcription.txt
-.venv/bin/python app.py "/path/to/book.m4a"
+.venv/bin/python app.py
 ```
 
-On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python`.
+On Windows, use `.venv\Scripts\python.exe` instead. Speech packages need compatible wheels for your Python/platform; pause/manual features do not require them.
 
-Click **Generate searchable transcript**. Choose **Tiny** for speed, **Base** for a balance of speed and accuracy, or **Small** for better recognition at higher CPU cost. Language detection is automatic; specify a language code such as `en` if it chooses the wrong language. First use downloads the chosen model from Hugging Face to its normal local cache; subsequent runs can use the cached model. Audio is processed locally and is not uploaded. No API key or paid service is required.
+| Option | Purpose |
+| --- | --- |
+| `file` | Optional source M4A/M4B path; reads it in place instead of uploading a copy. |
+| `--epub /path/book.epub` | Add the matching EPUB at startup. |
+| `--output /path/new.m4b` | Choose a new output path when providing a source file. |
+| `--workspace /path/projects` | Change project/checkpoint storage; default is `.chapterise-data` beside the app. |
+| `--port 8877` | Override default port 8765. |
+| `--host 0.0.0.0` | Listen for other computers; direct Python runs use loopback by default. |
+| `--public-origin https://books.example` | Optional exact browser-origin restriction for an advanced deployment. |
 
-- Speech overlapping each marker's 10-second preview window appears under its title. Adjusting the marker refreshes the displayed text. Segment timestamps are approximate, so displayed sentences can extend beyond the preview window.
-- Search finds literal, case-insensitive words or phrases within transcript passages throughout the recording. Select a result to preview 10 seconds from its exact timestamp and fill the manual chapter time, then add a missing break if appropriate. The first 100 matching passages are shown; narrow the query for more specific results.
-- Transcription preserves your current chapter edits and does not automatically add or rename chapters. It runs as a background job; scanning/export and chapter edits wait until it finishes.
-- **Save review JSON** includes the transcript. **Load review JSON** restores it without requiring the speech package or another transcription run (maximum review file size: 100 MB). Transcript text is for review/search and EPUB matching; it is not embedded in the exported audio metadata.
-- Recognition runs on CPU in five-minute chunks to bound audio memory use. Long books can take a while; phrases crossing chunk boundaries may be incomplete. Silence filtering reduces spurious text but recognition can still omit or invent words. Listen before deciding on a break.
+The speech model cache uses the recognition library's normal local cache. Docker uses its separate `/models` volume. Keep the process running during work; stop with Ctrl+C after active exports finish.
 
-## Detection and file handling
+## Troubleshooting
 
-Pause detection uses FFmpeg's existing [silencedetect filter](https://ffmpeg.org/ffmpeg-filters.html#silencedetect) and [chapter metadata format](https://ffmpeg.org/ffmpeg-formats.html#Metadata). It is independent of EPUB matching and needs no API key or model download. It is most useful for narrated recordings with distinct pauses. Music beds, room noise, and ordinary dramatic pauses can cause missed or extra candidates; listening and approval are the final decision.
+| Symptom | What to check |
+| --- | --- |
+| UI unavailable after updating an old stack | Pull/redeploy the intended image; remove an obsolete `CHAPTERISE_PUBLIC_ORIGIN` setting; check the published port/firewall. Open `/`, not an old token URL. |
+| Port 8765 is occupied | Change the host mapping to `8877:8765`, or use `--port 8877` for direct Python. |
+| Speech recognition unavailable | Docker includes it. For direct Python, install the transcription requirements and start the app with that environment's Python. |
+| First transcription appears slow | The model may still be downloading/loading. Long recordings run on CPU; use Tiny for speed or wait for progress. |
+| Too many or too few pause suggestions | Adjust minimum pause, threshold, and spacing; music-backed recordings often need EPUB matching or manual review. |
+| EPUB section has no match | It may be omitted, differently worded, reordered, or poorly recognized. Search/listen before marking it not present. |
+| Good text match, bad chapter start | The match may follow a heading or music, or be from a later passage. Adjust the timestamp or locate the opening manually. |
+| Audio will not play in the browser | Browser codec support varies. Use a compatible browser to review; detection/export may still work. |
+| Source changed or saved project will not open | Restore the original source location/content or upload it as a new project. Project fingerprints deliberately reject changed files. |
+| Export says output exists | Use a new CLI output path or a fresh uploaded project with your saved review. Existing exports are never overwritten. |
+| Export fails verification or runs out of space | Read the reported chapter/field error, check markers and free disk space, and keep the source and review backup. |
 
-- Increase the minimum pause or suggested spacing if there are too many candidates. Increase the threshold towards zero (for example, −30 dB) if background noise prevents pause detection.
-- Timestamps land in the middle of pauses and can be edited to millisecond precision. Selection spacing is a suggestion, not an export restriction.
-- Existing chapters are included initially. The final selected list replaces chapter metadata in the output. Blank titles become `Chapter 1`, `Chapter 2`, etc.
-- All audio streams and attached cover images are copied without re-encoding. Detection and browser preview use the first audio stream. FFmpeg copies supported global tags; arbitrary vendor-specific MP4 atoms and non-audio/non-cover tracks are not guaranteed to survive remuxing. Keep the original.
-- Export uses an explicit millisecond movie/chapter timescale to avoid timestamp overflow in long audiobook chapters with FFmpeg's automatic timescale. It verifies chapter count, starts, ends, and titles before publishing the new file; verification errors identify the mismatched chapter and field. Temporary space of up to twice the source file size may be needed in the destination directory.
-- Playback depends on the browser's support for the source audio codec. Chapter display depends on your audio player; the browser player here is for previewing the source. M4B may be more convenient for audiobook players.
-- Scanning decodes the recording once and runs in the background; long books can take a while. Let scanning/export finish before stopping the app.
+## Development and release checks
 
-## Tests
+Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1`.
+
+Run the automated tests:
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Tests create synthetic audio and EPUB files in temporary directories and exercise detection, approved metadata export, preservation of encoded audio and common tags, validation, uploads, project restoration, EPUB navigation, matching ambiguity/omissions, and transcription checkpoint reuse/errors. They do not download speech models.
-
-To also run the browser integration test, point `CHAPTERISE_TEST_BROWSER` at a Chromium-based browser:
+Optional browser integration test (Chromium-based browser):
 
 ```bash
 CHAPTERISE_TEST_BROWSER=/path/to/chromium python3 -m unittest discover -s tests -v
 ```
 
-That test uses fixed speech output to check search, preview, manual insertion, sliders, removal/undo, saved reviews, export, uploads, EPUB proposal acceptance, and refresh restoration. Real speech recognition is tested separately with local recordings.
+Tests use synthetic audio/EPUB fixtures and mocked speech output, without downloading models. They cover detection, EPUB matching, omissions/credits, review persistence, transcription checkpoints, approved exports, metadata verification, and HTTP access checks. Browser tests cover the user workflow, including root-page entry, uploads, sliders, search, removal/undo, and refresh restoration. These checks do not establish recognition accuracy on every audiobook.
+
+The publishing workflow builds the Linux AMD64 image, runs the tests inside it, and checks the root URL through a remapped Docker port with no environment configuration before pushing. `main` publishes `latest`; a Git tag such as `v1` publishes that release tag. Release tags do not overwrite `latest` merely by being built.

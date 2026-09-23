@@ -2,7 +2,7 @@
 # Open http://<docker-host>:8765/ after deploying.
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:latest
+    image: ghcr.io/chkn-11/chapterise:v1
     init: true
     restart: unless-stopped
     ports:
