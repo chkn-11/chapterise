@@ -40,6 +40,7 @@ jobs:
           docker compose config --quiet
           docker compose -f compose.published.yaml config --quiet
           docker compose -f compose.portainer.yaml config --quiet
+          docker compose -f compose.bind.yaml config --quiet
       - name: Build Intel/AMD image
         run: docker build --platform linux/amd64 --tag "$IMAGE:latest" --tag "$IMAGE:sha-$GITHUB_SHA" .
       - name: Test inside image
@@ -48,6 +49,8 @@ jobs:
           docker run --rm --init --volume "$GITHUB_WORKSPACE/tests:/app/tests:ro" --entrypoint python "$IMAGE:latest" -m unittest discover -s tests -v
       - name: Test published port and writable project volume
         run: python3 tests/check_container.py "$IMAGE:latest"
+      - name: Test custom UID and bind-mounted uploads and model cache
+        run: python3 tests/check_container.py "$IMAGE:latest" --custom-user
       - name: Publish to GitHub Container Registry
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}

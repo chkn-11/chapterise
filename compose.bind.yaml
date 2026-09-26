@@ -1,0 +1,14 @@
+# Portainer or Docker Compose: replace the UID:GID and host paths below.
+# Prepare both folders on the Docker host with ownership matching user:.
+# See README.md: Host folders and user permissions.
+services:
+  chapterise:
+    image: ghcr.io/chkn-11/chapterise:v1
+    user: "1000:1000"
+    init: true
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - /srv/chapterise/data:/data
+      - /srv/chapterise/models:/models

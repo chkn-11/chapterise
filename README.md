@@ -77,6 +77,40 @@ volumes:
 
 Port 8765 is the app's default. If it is occupied on your host, change only the mapping to `"8877:8765"` and browse to port 8877. The app automatically uses the host/port from the browser request.
 
+### Host folders and user permissions
+
+The container runs as **UID 10001, GID 10001** by default. The named-volume example above works with that default. When mounting host folders, those folders keep their host permissions: Docker does not automatically make them writable by Chapterise.
+
+For the default container user, prepare dedicated folders **on your Docker host** before deploying:
+
+```bash
+sudo mkdir -p /srv/chapterise/data /srv/chapterise/models
+sudo chown -R 10001:10001 /srv/chapterise/data /srv/chapterise/models
+sudo chmod u+rwx /srv/chapterise/data /srv/chapterise/models
+```
+
+Replace these paths with your own dedicated Chapterise folders. The recursive ownership change includes existing uploads and model downloads. Both `/data` and `/models` must be writable.
+
+You can also run as a specific host user using Compose's native `user:` setting. Find that user's numeric IDs with `id -u USERNAME` and `id -g USERNAME` on the Docker host, then use them in your stack:
+
+```yaml
+services:
+  chapterise:
+    image: ghcr.io/chkn-11/chapterise:v1
+    user: "1000:1000" # Replace with your host user's UID:GID.
+    init: true
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - /srv/chapterise/data:/data
+      - /srv/chapterise/models:/models
+```
+
+This is also available as [compose.bind.yaml](compose.bind.yaml) for Portainer or Docker Compose. For this example, use **1000:1000 instead of 10001:10001** in the ownership command above. Changing `user:` does not change ownership of existing folders or volumes; update their ownership or grant the chosen user access before redeploying. If switching an existing named volume to a custom user, its files also need permission updates.
+
+No environment variables are required. `PUID` and `PGID` environment variables are not implemented; use `user: "UID:GID"`. This works with the existing `v1` image.
+
 ### Versions, updates, and persistent storage
 
 | Image tag | Purpose |
@@ -337,6 +371,7 @@ The speech model cache uses the recognition library's normal local cache. Docker
 
 | Symptom | What to check |
 | --- | --- |
+| `[Errno 13] Permission denied: '/data/upload-...'` or model-cache permission errors | Ensure both mounted folders are writable by the container's UID/GID (default `10001:10001`). See [host folders and user permissions](#host-folders-and-user-permissions), including how to set a custom `user:`. |
 | UI unavailable after updating an old stack | Pull/redeploy the intended image; remove an obsolete `CHAPTERISE_PUBLIC_ORIGIN` setting; check the published port/firewall. Open `/`, not an old token URL. |
 | Port 8765 is occupied | Change the host mapping to `8877:8765`, or use `--port 8877` for direct Python. |
 | Speech recognition unavailable | Docker includes it. For direct Python, install the transcription requirements and start the app with that environment's Python. |
