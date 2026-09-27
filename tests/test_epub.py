@@ -27,6 +27,21 @@ def make_epub(path, ncx=False, no_toc=False):
 
 
 class EpubTests(unittest.TestCase):
+    def test_missing_anchor_recovers_only_unambiguous_documents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'broken.epub'
+            with ZipFile(path, 'w') as z:
+                z.writestr('META-INF/container.xml', '<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>')
+                z.writestr('book.opf', '<package><manifest><item id="nav" href="nav.xhtml" properties="nav"/><item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><item id="b" href="b.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="a"/><itemref idref="b"/></spine></package>')
+                z.writestr('nav.xhtml', '<html><nav role="doc-toc"><a href="a.xhtml#stale">Recovered</a><a href="b.xhtml#first">First</a><a href="b.xhtml#missing">Ambiguous</a></nav></html>')
+                z.writestr('a.xhtml', '<html><body><h1><img alt="Recovered"/></h1><p>A chapter whose heading is an image.</p></body></html>')
+                z.writestr('b.xhtml', '<html><body><h1 id="first">Next chapter</h1><p>Distinct second passage.</p></body></html>')
+            book = read_epub(path)
+            self.assertEqual([c['title'] for c in book['chapters']], ['Recovered', 'First'])
+            self.assertNotIn('Distinct second', book['chapters'][0]['text'])
+            self.assertTrue(any('Recovered contents entry' in w for w in book['warnings']))
+            self.assertTrue(any('Could not locate contents anchor: Ambiguous' == w for w in book['warnings']))
+
     def test_navigation_fragments_and_ncx(self):
         with tempfile.TemporaryDirectory() as directory:
             for ncx in (False, True):
@@ -138,6 +153,31 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(proposals[0]['confidence'], 'unmatched')
         self.assertIn('may be omitted', proposals[0]['reason'])
         self.assertIsNone(proposals[0]['start'])
+
+    def test_internal_production_blocks_are_grouped_and_reviewable(self):
+        book = self.book([self.passage, self.other])
+        transcript = {'segments': [
+            transcript_passage(self.passage, 10),
+            transcript_passage('This is a Graphic Audio production', 200),
+            transcript_passage('Narrated by Example Reader and performed by a full cast', 220),
+            transcript_passage('Production copyright all rights reserved', 260),
+            transcript_passage('Graphic Audio presents the next part', 430),
+            transcript_passage('Performed by another full cast', 450),
+            transcript_passage(self.other, 600),
+            transcript_passage('Graphic Audio presents a second intermission', 800),
+            transcript_passage('Narrated by Another Reader', 820),
+            transcript_passage(self.passage, 1000)]}
+        anchors = [{'start': 10}, {'start': 600}, {'start': 1000}]
+        extras = audio_extras(book, transcript, anchors)
+        internal = [p for p in extras if 'interlude' in p['id']]
+        self.assertEqual([p['start'] for p in internal], [200, 800])
+        self.assertEqual(len({p['id'] for p in internal}), 2)
+        self.assertTrue(all(p['confidence'] == 'review' for p in internal))
+        quoted = self.book([' '.join(s['text'] for s in transcript['segments'])])
+        self.assertEqual(audio_extras(quoted, transcript, anchors), [])
+        sparse = {'segments': [transcript_passage('Graphic Audio presents', 200),
+                               transcript_passage('Narrated by Example Reader', 450)]}
+        self.assertEqual(audio_extras(book, sparse, anchors), [])
 
 
 class ProjectTests(unittest.TestCase):

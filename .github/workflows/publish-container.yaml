@@ -60,6 +60,10 @@ jobs:
           docker push "$IMAGE:sha-$GITHUB_SHA"
           docker push "$IMAGE:$PUBLISH_TAG"
           docker manifest inspect "$IMAGE:$PUBLISH_TAG" > /dev/null
+          if [[ "$PUBLISH_TAG" != "latest" ]]; then
+            docker push "$IMAGE:latest"
+            docker manifest inspect "$IMAGE:latest" > /dev/null
+          fi
       - name: Log out
         if: always()
         run: docker logout ghcr.io

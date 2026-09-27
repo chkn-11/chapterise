@@ -120,13 +120,22 @@ def read_epub(path):
                 all_parts.extend(pages[name].parts)
                 all_parts.append('\n')
             boundaries = {}
+            targets = defaultdict(set)
+            for _, name, fragment in entries:
+                targets[name].add(fragment)
             for title, name, fragment in entries:
                 if name not in pages:
                     warnings.append(f'Skipped contents entry outside the reading order: {title}')
                     continue
                 if fragment and fragment not in pages[name].anchors:
-                    warnings.append(f'Could not locate contents anchor: {title}')
-                    continue
+                    if len(targets[name]) != 1:
+                        warnings.append(f'Could not locate contents anchor: {title}')
+                        continue
+                    # Some converted EPUBs retain stale fragment IDs even though
+                    # each chapter still has its own document. Never guess when
+                    # several different entries share that document.
+                    warnings.append(f'Recovered contents entry from document start (missing anchor): {title}')
+                    fragment = ''
                 position = offsets[name] + (pages[name].anchors[fragment] if fragment else 0)
                 # A parent part and its first child may point to the same location.
                 boundaries[position] = title or 'Untitled section'
@@ -221,6 +230,36 @@ def audio_extras(book, transcript, proposals):
         if 'cast' in kinds and ('production' in kinds or {'closing', 'rights'} <= kinds):
             extras.append(proposal('outro', segment['start'], [s for s, c in cluster if c]))
             break
+    # Multi-part recordings can contain credits, adverts and another intro
+    # between story chapters. Group nearby cues so each production block gets
+    # one suggestion, rather than a marker for every cast or copyright line.
+    interior = [(s, cues(s)) for s in segments
+                if min(matched) < s['start'] < max(matched)]
+    clusters = []
+    for segment, markers in interior:
+        if not markers:
+            continue
+        if (not clusters or segment['start'] - clusters[-1][-1][0]['end'] > 300 or
+                any(clusters[-1][-1][0]['start'] < start <= segment['start'] for start in matched)):
+            clusters.append([])
+        clusters[-1].append((segment, markers))
+    for cluster in clusters:
+        # Independent production and cast cues must occur close together;
+        # unrelated mentions spread across a long passage are insufficient.
+        supported = any('cast' in set().union(*(c for s, c in cluster
+                                                if first['start'] <= s['start'] <= first['start'] + 90))
+                        and 'production' in set().union(*(c for s, c in cluster
+                                                if first['start'] <= s['start'] <= first['start'] + 90))
+                        for first, _ in cluster)
+        if not supported:
+            continue
+        start = cluster[0][0]['start']
+        extras.append({'id': f'audio-only-interlude-{round(start * 1000)}',
+                       'title': 'Audio-only interlude / production credits',
+                       'source': 'audio', 'start': start, 'confidence': 'review',
+                       'book_excerpt': '',
+                       'audio_excerpt': ' '.join(s['text'] for s, _ in cluster)[:700],
+                       'reason': 'Production and cast announcements occur between book matches. This may contain part credits, adverts, or another intro. The timestamp marks spoken evidence; listen for the actual boundary and where the story resumes.'})
     return extras
 
 
@@ -325,5 +364,5 @@ def match_book(book, transcript, progress=None):
             proposal['reason'] = 'Matches conflict with the book chapter order. Locate this chapter manually.'
         proposals.append(proposal)
     proposals.extend(audio_extras(book, transcript, proposals))
-    return {'proposals': proposals, 'engine': 'phrase-alignment-v2',
+    return {'proposals': proposals, 'engine': 'phrase-alignment-v3',
             'notice': 'Confidence describes matching evidence, not a probability. GraphicAudio omissions may move the first matched passage past the chapter start.'}
