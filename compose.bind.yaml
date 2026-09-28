@@ -3,7 +3,7 @@
 # See README.md: Host folders and user permissions.
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.1
+    image: ghcr.io/chkn-11/chapterise:v1.2
     user: "1000:1000"
     init: true
     restart: unless-stopped

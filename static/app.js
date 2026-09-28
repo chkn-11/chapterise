@@ -45,6 +45,7 @@ function updateControls() {
   $("review").disabled = busy || unloaded;
   $("transcription-settings").disabled = busy || unloaded;
   $("align").disabled = busy || unloaded || !book || (!transcript && !state.transcription_available);
+  $("rapid-review").disabled = busy || unloaded || !alignment?.proposals?.length;
   $("pause-job").hidden = !busy || !state?.job?.cancellable;
   $("approved").disabled = busy;
   $("export").disabled = busy || unloaded || !$("approved").checked;
@@ -419,6 +420,7 @@ function renderProposals() {
         if (existing) { existing.title = proposal.title; existing.epubId = proposal.id; }
         else rows.push({start: proposal.start, originalStart: proposal.start, title: proposal.title, selected: true,
                         kind: proposal.source === "audio" ? "manual" : "epub", pause: null, epubId: proposal.id, evidence: proposal.reason});
+        omittedSections = omittedSections.filter(id => id !== proposal.id);
         rows.sort((a,b) => a.start-b.start); invalidate(); render(); renderProposals();
         message("Suggested marker added to your review. Adjust its timestamp if needed and approve the final list before export.");
       };
@@ -432,13 +434,15 @@ function renderProposals() {
       $("manual-time").focus(); $("manual-form").scrollIntoView({block: "nearest"});
     };
     actions.append(locate);
-    if (proposal.start === null && proposal.source !== "audio") {
+    {
       const omit = document.createElement("button"); omit.className = "omit-section";
       omit.textContent = omitted ? "Reconsider section" : "Mark not present in recording";
-      omit.disabled = busy;
+      const acceptedRow = rows.find(r => r.epubId === proposal.id);
+      omit.disabled = busy || acceptedRow?.start === 0;
       omit.onclick = () => {
+        if (!omitted && acceptedRow) rows = rows.filter(r => r !== acceptedRow);
         omittedSections = omitted ? omittedSections.filter(id => id !== proposal.id) : [...omittedSections, proposal.id];
-        invalidate(); renderProposals();
+        invalidate(); render(); renderProposals();
       };
       actions.append(omit);
     }
@@ -495,5 +499,79 @@ $("pause-job").onclick = async () => {
   try { await api("cancel", {}); message("Pausing at the next safe point. Completed audio chunks are saved."); }
   catch (error) { message(error.message, true); }
 };
+
+// The main window owns review state and persistence. The popup never maintains
+// a competing project copy or calls the review API directly.
+let rapidWindow = null, rapidContext = null, rapidSaving = false;
+const rapidBanner = document.createElement("section");
+rapidBanner.hidden = true;
+const rapidNotice = document.createElement("p");
+rapidNotice.textContent = "Rapid review is open in a separate window. Finish there to return to the main review.";
+const rapidFocus = document.createElement("button"); rapidFocus.textContent = "Focus rapid review";
+rapidFocus.onclick = () => rapidWindow?.focus();
+const rapidClose = document.createElement("button"); rapidClose.textContent = "Return to main review";
+rapidClose.onclick = () => { if (!rapidSaving) { rapidWindow?.close(); releaseRapid(); } };
+rapidBanner.append(rapidNotice, rapidFocus, rapidClose); document.body.prepend(rapidBanner);
+function releaseRapid() {
+  document.querySelector("main").inert = false; rapidBanner.hidden = true;
+  rapidContext = null; rapidWindow = null;
+}
+function checkRapid() {
+  if (!rapidContext || busy || rapidContext.project !== state.project_id || rapidContext.alignment !== alignment)
+    throw Error("The project or matching results changed. Close and reopen rapid review.");
+}
+window.chapteriseRapid = {
+  snapshot() {
+    checkRapid();
+    return JSON.parse(JSON.stringify({proposals: alignment.proposals, rows, omitted: omittedSections,
+      duration: state.duration, filename: state.filename, audioURL: audio.src}));
+  },
+  async commit({id, start, title, action, manual = false}) {
+    checkRapid();
+    if (rapidSaving) throw Error("Wait for the current decision to finish saving.");
+    const proposal = alignment.proposals.find(p => p.id === id);
+    if (!manual && !proposal) throw Error("This proposal no longer exists.");
+    if (!['accept', 'omit'].includes(action) || (manual && action !== 'accept')) throw Error("Invalid review action.");
+    let existing = rows.find(r => manual ? r.rapidId === id : r.epubId === id);
+    if (action === 'omit') {
+      if (existing?.start === 0) throw Error("The opening marker must remain at zero. Rename it instead.");
+      if (existing) rows = rows.filter(r => r !== existing);
+      if (!omittedSections.includes(id)) omittedSections.push(id);
+    } else {
+      title = typeof title === 'string' ? title.trim() : '';
+      if (!title || title.length > 500 || /[\x00-\x1f]/.test(title)) throw Error("Enter a chapter name of 1–500 characters.");
+      if (!Number.isFinite(start)) throw Error("Locate a boundary before accepting this chapter.");
+      start = Math.round(start * 1000) / 1000;
+      if (start < 0 || start >= state.duration) throw Error("Choose a boundary within the recording.");
+      if (existing?.start === 0 && start !== 0) throw Error("The opening marker must remain at zero.");
+      const collision = rows.find(r => r !== existing && Math.round(r.start * 1000) === Math.round(start * 1000));
+      if (collision && (start !== 0 || existing || manual || (collision.epubId && collision.epubId !== id)))
+        throw Error("Another chapter occupies this time. Adjust the boundary before accepting.");
+      existing ||= collision;
+      if (existing) Object.assign(existing, {start, title, selected: true, ...(manual ? {} : {epubId: id})});
+      else rows.push({start, originalStart: proposal?.start ?? start, title, selected: true,
+        kind: manual || proposal.source === 'audio' ? 'manual' : 'epub', pause: null,
+        ...(manual ? {rapidId: id} : {epubId: id, evidence: proposal.reason})});
+      omittedSections = omittedSections.filter(value => value !== id);
+      rows.sort((a, b) => a.start - b.start);
+    }
+    rapidSaving = true; rapidClose.disabled = true;
+    invalidate(); render(); renderProposals();
+    try { await persistReview(); }
+    finally { rapidSaving = false; rapidClose.disabled = false; }
+  }
+};
+$("rapid-review").onclick = () => {
+  if (busy || !alignment?.proposals?.length) return;
+  if (rapidWindow && !rapidWindow.closed) { rapidWindow.focus(); return; }
+  rapidContext = {project: state.project_id, alignment};
+  rapidWindow = window.open('rapid-review.html', 'chapterise-rapid-review', 'popup,width=940,height=880');
+  if (!rapidWindow) { releaseRapid(); message("Allow popups for this site, then open rapid review again.", true); return; }
+  audio.pause(); document.querySelector("main").inert = true; rapidBanner.hidden = false;
+  const timer = setInterval(() => {
+    if (!rapidWindow || rapidWindow.closed) { clearInterval(timer); releaseRapid(); }
+  }, 400);
+};
+window.addEventListener('pagehide', () => rapidWindow?.close());
 
 init();

@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2 — 2026-09-28
+
+- Add a separate rapid-review window after EPUB matching, with 250 ms / Shift-5-second boundary adjustments, exact ten-second previews, Enter to save and advance, editable names, and visible match evidence.
+- Include unmatched entries and audio-only suggestions; support not-present decisions, manual audio-only markers, revisiting accepted markers, and immediate project saving with retry feedback.
+- Keep the main editor paused while rapid review is open. Export still requires separate approval.
+- Allow not-present/reconsider decisions for matched proposals and audio-only suggestions in the main review as well.
+
+Upgrade: pull `ghcr.io/chkn-11/chapterise:v1.2` (or `latest`) and redeploy with the same volumes. Open a saved project with EPUB matching results, then choose **Open rapid review ↗**. Existing results and transcripts can be reused; keep the main window open.
+
+Validation: browser regression tests cover keyboard increments, edited titles, omission/reconsideration, audio-only markers, failed-save retries, duplicate prevention, and refresh persistence.
+
 ## v1.1 — 2026-09-27
 
 ### EPUB matching and GraphicAudio recordings

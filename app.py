@@ -494,9 +494,11 @@ def handler_for(session, token=None, public_origin=None):
                     self.audio(session.output, download=True)
                 elif route == "audio" and session.source:
                     self.audio()
-                elif route in {"", "app.js", "style.css"}:
+                elif route in {"", "app.js", "style.css", "rapid-review.html", "rapid-review.js"}:
                     filename, kind = {"": ("index.html", "text/html; charset=utf-8"),
                                       "app.js": ("app.js", "text/javascript"),
+                                      "rapid-review.html": ("rapid-review.html", "text/html; charset=utf-8"),
+                                      "rapid-review.js": ("rapid-review.js", "text/javascript"),
                                       "style.css": ("style.css", "text/css")}[route]
                     self.send_bytes((STATIC / filename).read_bytes(), kind)
                 else:

@@ -16,6 +16,7 @@ Chapterise runs on your computer or Docker server. Audio and EPUB text are proce
 | [Speech-to-text](#3-generate-and-search-a-transcript) | Transcribe the recording locally and show nearby speech beside each marker. |
 | [Transcript search](#3-generate-and-search-a-transcript) | Find a word or phrase, preview it, and use its position for a manual chapter. |
 | [EPUB matching](#4-find-chapters-from-an-epub) | Match chapter text against recognized speech and propose boundaries with evidence. |
+| [Rapid review](#rapid-review-after-epub-matching) | Review matches in a separate window, nudge boundaries with the keyboard, and save each decision before advancing. |
 | [Omitted sections](#5-handle-omitted-epub-sections) | Mark an unmatched prologue, title page, or other section as absent from this recording. |
 | [Intros, interludes, and credits](#6-review-audio-only-intros-and-outros) | Suggest audio-only sections at the beginning, between chapters, and at the end when production/cast announcements are recognized. |
 | [Preview and precision](#7-preview-adjust-rename-and-select-markers) | Play ten seconds from the marker; adjust with a ±15-second slider or typed timestamp. |
@@ -31,7 +32,7 @@ Chapterise runs on your computer or Docker server. Audio and EPUB text are proce
 
 ## Install with Docker or Portainer
 
-Published image: **`ghcr.io/chkn-11/chapterise:v1.1`**
+Published image: **`ghcr.io/chkn-11/chapterise:v1.2`**
 
 The public image supports **Linux x86-64 (Intel/AMD)** and includes Python, FFmpeg, and CPU speech recognition. No registry login or host Python installation is needed. ARM and GPU images are not provided in this release.
 
@@ -42,7 +43,7 @@ Everything needed for deployment is in this file. No `.env`, server-IP setting, 
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.1
+    image: ghcr.io/chkn-11/chapterise:v1.2
     init: true
     restart: unless-stopped
     ports:
@@ -96,7 +97,7 @@ You can also run as a specific host user using Compose's native `user:` setting.
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.1
+    image: ghcr.io/chkn-11/chapterise:v1.2
     user: "1000:1000" # Replace with your host user's UID:GID.
     init: true
     restart: unless-stopped
@@ -117,8 +118,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release changes and upgrade notes.
 
 | Image tag | Purpose |
 | --- | --- |
-| `v1.1` | Current release; ordinary pushes to `main` do not advance this tag. |
-| `v1` | Previous release, retained for existing deployments. |
+| `v1.2` | Current release; ordinary pushes to `main` do not advance this tag. |
+| `v1.1`, `v1` | Previous releases, retained for existing deployments. |
 | `latest` | The newest successfully published build from `main`. |
 | `sha-<full-commit-id>` | A build associated with a particular source commit. |
 
@@ -226,16 +227,39 @@ If a contents link has a missing anchor but is the only distinct contents target
 
 **GraphicAudio and adaptations:** narration, prologues, or entire scenes may be cut or rearranged. A clear match hundreds of words into a chapter is a navigation clue, not its verified opening. Even a strong opening-text match may come after a spoken chapter heading or introductory music.
 
+### Rapid review after EPUB matching
+
+After **Find EPUB chapters** finishes, click **Open rapid review ↗**. Allow popups for this site if prompted. The separate window shows one section at a time: editable chapter name, predicted and chosen boundaries, match strength/reason, book passage, and recognized speech. Audio-only suggestions appear among the EPUB entries; unmatched entries remain available for manual location or omission.
+
+| Key | Action |
+| --- | --- |
+| Left / Right arrow | Move the chosen boundary back/forward 250 ms and replay. |
+| Shift + Left / Right arrow | Move back/forward 5 seconds and replay. |
+| Space | Replay from the chosen boundary, or pause playback. |
+| Enter | Save the marker as matched, then advance to the next section. |
+| N | Mark the section not present, then advance. |
+| [ / ] | Previous section / skip to the next section. |
+
+Shortcuts are inactive while editing a text field, choosing a section, or using the audio player's own controls. Tab out of those controls to use them. Playback starts at the exact chosen boundary and continues for ten seconds, or until the recording ends. The playhead moving during playback does not move your chosen boundary; **Use playback position** explicitly captures it.
+
+Edit **Chapter name** or type a **Chosen boundary** for larger changes. For an unmatched section, enter a timestamp or seek with the player and use **Use playback position** before accepting; the app does not invent a start. Choose **Not present** for omitted EPUB sections or unwanted audio-only suggestions. If already accepted, that section's marker is removed; the required zero-time opening marker cannot be removed. Revisiting and accepting a section updates its existing marker and clears its not-present decision.
+
+Use **Add audio-only marker** for an additional intro, credits block, or other section absent from the proposals. Locate it with the player, enter its name, adjust its boundary, and save it. This returns you to the current section in the review queue. **Cancel audio-only marker** discards that new draft.
+
+Each accepted/not-present decision saves through the main project's review. If saving fails, the window stays on the same item and shows an error; retry before advancing. Unsaved boundary/name drafts remain available while navigating the window but are discarded when it closes. Already saved decisions survive reopening; review starts at the first section without an accepted/not-present decision. **Skip** makes no decision.
+
+Keep the main window open. Its editor is paused while rapid review is open; use **Close rapid review** or **Return to main review** to return. No decisions approve or trigger an export: check the resulting chapter list and explicitly approve it in the main window.
+
 ### 5. Handle omitted EPUB sections
 
 **What it does:** records that an unmatched ebook section is not part of this particular audio adaptation.
 
-1. Review an **Unmatched** proposal, such as a title page, acknowledgments, or prologue.
+1. Review an EPUB proposal, such as an unmatched title page, acknowledgments, or prologue. Matched proposals can also be marked not present if their evidence is misleading.
 2. Check the audio before assuming the section was omitted; search/recognition can miss real content.
 3. If it is absent, click **Mark not present in recording**.
 4. To revisit that decision, click **Reconsider section**.
 
-The decision is saved in the project and review JSON. It does not delete audio, remove existing chapter markers, or force later sections to match. The app does not automatically declare every unmatched section omitted.
+The decision is saved in the project and review JSON. Marking a section not present removes its previously accepted proposal marker, if any; the required zero-time opening marker is protected. Audio is unchanged. Reconsidering clears the omission so you can accept or locate the section again. The app does not automatically declare every unmatched section omitted.
 
 ### 6. Review audio-only intros and outros
 
@@ -393,7 +417,7 @@ The speech model cache uses the recognition library's normal local cache. Docker
 
 ## Development and release checks
 
-Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.1`.
+Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.2`.
 
 Run the automated tests:
 
@@ -409,4 +433,4 @@ CHAPTERISE_TEST_BROWSER=/path/to/chromium python3 -m unittest discover -s tests 
 
 Tests use synthetic audio/EPUB fixtures and mocked speech output, without downloading models. They cover detection, EPUB matching, omissions/credits, review persistence, transcription checkpoints, approved exports, metadata verification, and HTTP access checks. Browser tests cover the user workflow, including root-page entry, uploads, sliders, search, removal/undo, and refresh restoration. These checks do not establish recognition accuracy on every audiobook.
 
-The publishing workflow builds the Linux AMD64 image, runs the tests inside it, and checks the root URL through a remapped Docker port with no environment configuration before pushing. `main` publishes `latest`; a Git tag such as `v1.1` publishes both that release tag and `latest` from the same tested image. Only tag a release when it should become the default deployment.
+The publishing workflow builds the Linux AMD64 image, runs the tests inside it, and checks the root URL through a remapped Docker port with no environment configuration before pushing. `main` publishes `latest`; a Git tag such as `v1.2` publishes both that release tag and `latest` from the same tested image. Only tag a release when it should become the default deployment.

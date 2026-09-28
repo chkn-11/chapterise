@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chapterise — rapid review</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="rapid-review.js" defer></script>
+</head>
+<body class="rapid-review">
+<main>
+  <header><span class="eyebrow">CHAPTERISE · RAPID REVIEW</span><h1>Listen. Adjust. Match.</h1><p id="file"></p></header>
+  <p id="status" role="status">Connecting to your project…</p>
+  <fieldset id="controls" disabled>
+    <section>
+      <label>Review section<select id="chapter-list"></select></label>
+      <p id="position" class="hint"></p>
+      <label>Chapter name<input id="title" maxlength="500"></label>
+      <p id="strength" class="confidence"></p>
+      <p id="reason"></p>
+      <div class="manual-fields">
+        <div><strong>Predicted boundary</strong><p id="predicted"></p></div>
+        <label>Chosen boundary<input id="boundary" placeholder="Locate a time: HH:MM:SS.mmm"></label>
+      </div>
+      <p id="decision" class="hint"></p>
+      <div class="evidence">
+        <div><h2>Matched book text</h2><p id="book-text"></p></div>
+        <div><h2>Recognized audio</h2><p id="audio-text"></p></div>
+      </div>
+      <audio id="audio" controls preload="metadata"></audio>
+      <div class="toolbar">
+        <button id="back-large">−5s</button><button id="back">−250ms</button>
+        <button id="play">Replay / pause (Space)</button>
+        <button id="forward">+250ms</button><button id="forward-large">+5s</button>
+        <button id="capture">Use playback position</button>
+      </div>
+      <p class="hint">← / → adjust the chosen boundary by 250ms; Shift + ← / → adjust by 5s. Each adjustment replays ten seconds from that exact boundary. Enter saves the match and advances. N marks not present; [ / ] move between sections. Shortcuts are inactive in text fields and the player. Tab moves between controls.</p>
+      <div class="toolbar">
+        <button id="accept" class="primary">Matched — save & next (Enter)</button>
+        <button id="omit">Not present — save & next (N)</button>
+        <button id="previous">Previous</button><button id="next">Skip / next</button>
+        <button id="add-audio">Add audio-only marker</button>
+      </div>
+      <p class="hint">Edits become chapter markers only when you choose Matched. Not present removes this proposal's accepted marker, if any; the required opening marker stays at zero. Final export still requires approval in the main window.</p>
+    </section>
+  </fieldset>
+  <button id="close">Close rapid review</button>
+</main>
+</body>
+</html>
