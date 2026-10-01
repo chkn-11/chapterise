@@ -370,7 +370,8 @@ class Session:
             if self.cancelled.is_set():
                 raise InterruptedError('Matching paused. Run again to retry; the transcript is saved.')
             self.progress(value, detail)
-        result = match_book(self.book, self.transcript, progress)
+        result = match_book(self.book, self.transcript, progress,
+                            existing_chapters=probe(self.source).get('chapters', []))
         self.unchanged()
         with self.lock:
             self.alignment = result

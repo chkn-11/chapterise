@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3 — 2026-10-02
+
+- Retain illustration-only EPUB entries and search for distinctive spoken titles as review candidates.
+- Use nearby earlier embedded chapter boundaries for opening-text matches, with explicit review warnings; accepting a suggestion reuses the corresponding unlinked source marker.
+
+- Include short leading EPUB block quotations and attributions in their own chapter when the document has one contents target. Preserve shared-document anchors and skip ordinary preceding prose or earlier headed sections.
+- Verify unchanged parsing for five previously used audiobook EPUBs, and add EPUB2/EPUB3 epigraph and boundary regression tests.
+
+Upgrade: pull `ghcr.io/chkn-11/chapterise:v1.3` (or `latest`) and redeploy with the same volumes. Save a review JSON backup, re-upload the EPUB, then rerun **Find EPUB chapters** using the existing transcript. Existing saved decisions remain intact; repaired section boundaries can change proposal IDs, so check for duplicates before accepting suggestions.
+
+Validation: 34 regression tests passed, including browser interactions, source-marker reuse, image-only sections, epigraph recovery, and shared-document boundaries. Fixed a browser-test reload synchronization race.
+
+Known limitations: direct detection of spoken numerical headings before matched prose and flexible map-title prefixes are not included in this release. Headings absent from the transcript, some narrated illustrations, and later-passage matches still need manual review. Source-boundary adjustments are suggestions, not verified chapter starts.
+
 ## v1.2 — 2026-09-28
 
 - Add a separate rapid-review window after EPUB matching, with 250 ms / Shift-5-second boundary adjustments, exact ten-second previews, Enter to save and advance, editable names, and visible match evidence.

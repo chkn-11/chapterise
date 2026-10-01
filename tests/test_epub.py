@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import Session, ThreadingHTTPServer, handler_for, validate_transcript
-from epub_match import match_book, read_epub, resolve, audio_extras
+from epub_match import match_book, read_epub, resolve, audio_extras, PageText
 
 
 def make_epub(path, ncx=False, no_toc=False):
@@ -27,6 +27,63 @@ def make_epub(path, ncx=False, no_toc=False):
 
 
 class EpubTests(unittest.TestCase):
+    def test_image_only_contents_entry_is_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = make_epub(Path(directory) / 'images.epub')
+            with ZipFile(path) as z:
+                files = {name: z.read(name) for name in z.namelist()}
+            files['OPS/text.xhtml'] = b'<html><body><div id="one"><img src="drawing.jpg"/></div><h1 id="two">Second</h1><p>Readable chapter.</p></body></html>'
+            with ZipFile(path, 'w') as z:
+                for name, data in files.items():
+                    z.writestr(name, data)
+            book = read_epub(path)
+            self.assertEqual([c['title'] for c in book['chapters']], ['First', 'Second'])
+            self.assertEqual(book['chapters'][0]['text'], '')
+            self.assertEqual(book['chapters'][0]['word_count'], 0)
+
+    def test_leading_epigraph_belongs_to_its_chapter(self):
+        quote = 'Before the winter voyage every sailor must learn the names of all the northern stars'
+        with tempfile.TemporaryDirectory() as directory:
+            for ncx in (False, True):
+                path = Path(directory) / 'epigraph.epub'
+                with ZipFile(path, 'w') as z:
+                    z.writestr('META-INF/container.xml', '<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>')
+                    nav = '<item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"/>' if ncx else '<item id="toc" href="nav.xhtml" properties="nav"/>'
+                    z.writestr('book.opf', '<package><manifest>' + nav + '<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><item id="b" href="b.xhtml" media-type="application/xhtml+xml"/></manifest><spine toc="toc"><itemref idref="a"/><itemref idref="b"/></spine></package>')
+                    z.writestr('a.xhtml', '<html><body><h1 id="a">First</h1><p>The previous story ends here.</p></body></html>')
+                    z.writestr('b.xhtml', f'<html><head><title>Hidden</title></head><body><blockquote>{quote}</blockquote><p>— A sailor’s handbook</p><h1 id="b">Second</h1><p>A new story begins here.</p></body></html>')
+                    z.writestr('nav.xhtml', '<html><nav role="doc-toc"><a href="a.xhtml#a">First</a><a href="b.xhtml#b">Second</a></nav></html>')
+                    z.writestr('toc.ncx', '<ncx><navMap><navPoint><navLabel><text>First</text></navLabel><content src="a.xhtml#a"/></navPoint><navPoint><navLabel><text>Second</text></navLabel><content src="b.xhtml#b"/></navPoint></navMap></ncx>')
+                book = read_epub(path)
+                self.assertNotIn(quote, book['chapters'][0]['text'])
+                self.assertTrue(book['chapters'][1]['text'].startswith(quote))
+                self.assertIn('1 sections', book['warnings'][0])
+                proposal = match_book(book, {'segments': [transcript_passage(quote, 50)]})['proposals'][1]
+                self.assertEqual(proposal['start'], 50)
+
+    def test_epigraph_rule_rejects_ordinary_prose_and_prior_sections(self):
+        for prefix in ['<p>Ordinary preceding prose.</p>',
+                       '<p>Earlier story.</p><blockquote>A quotation.</blockquote>',
+                       '<h1>Earlier section</h1><blockquote>A quotation.</blockquote>',
+                       '<blockquote>' + 'word ' * 401 + '</blockquote>',
+                       '<blockquote>A quotation.</blockquote><p>' + 'prose ' * 81 + '</p>']:
+            page = PageText(prefix + '<h1 id="chapter">Chapter</h1>')
+            self.assertFalse(page.has_leading_epigraph(page.anchors['chapter']))
+
+    def test_shared_document_epigraph_keeps_explicit_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = make_epub(Path(directory) / 'shared.epub')
+            with ZipFile(path) as z:
+                files = {name: z.read(name) for name in z.namelist()}
+            files['OPS/text.xhtml'] = files['OPS/text.xhtml'].replace(b'<body>', b'<body><blockquote>A quotation before both sections.</blockquote>')
+            with ZipFile(path, 'w') as z:
+                for name, data in files.items():
+                    z.writestr(name, data)
+            book = read_epub(path)
+            self.assertEqual(book['warnings'], [])
+            self.assertNotIn('quotation', book['chapters'][0]['text'])
+            self.assertNotIn('Second', book['chapters'][0]['text'])
+
     def test_missing_anchor_recovers_only_unambiguous_documents(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'broken.epub'
@@ -81,6 +138,31 @@ class MatchingTests(unittest.TestCase):
 
     def book(self, texts):
         return {'chapters': [{'id': str(i), 'title': f'Chapter {i}', 'text': text} for i, text in enumerate(texts)]}
+
+    def test_source_boundary_preserves_heading_but_not_late_passage(self):
+        transcript = {'segments': [transcript_passage(self.passage, 20)]}
+        book = self.book([self.passage])
+        original = match_book(book, transcript)['proposals'][0]
+        self.assertEqual(original['start'], 20)
+        adjusted = match_book(book, transcript, existing_chapters=[{'start_time': '15'}])['proposals'][0]
+        self.assertEqual(adjusted['start'], 15)
+        self.assertEqual(adjusted['text_match_start'], 20)
+        self.assertEqual(adjusted['confidence'], 'review')
+        late = self.book(['omitted ' * 100 + self.passage])
+        self.assertEqual(match_book(late, transcript, existing_chapters=[{'start_time': '15'}])['proposals'][0]['start'], 20)
+        far = {'segments': [transcript_passage(self.passage, 100)]}
+        self.assertEqual(match_book(book, far, existing_chapters=[{'start_time': '15'}])['proposals'][0]['start'], 100)
+
+    def test_illustration_title_needs_full_heading_not_story_mention(self):
+        book = self.book([''])
+        book['chapters'][0]['title'] = "Shallan’s Sketchbook: Cryptics"
+        speech = {'segments': [transcript_passage('She took her sketchbook and began drawing Cryptics', 10),
+                               transcript_passage("Shalon's Sketchbook. Cryptics. A description follows", 100)]}
+        p = match_book(book, speech)['proposals'][0]
+        self.assertEqual(p['start'], 100)
+        self.assertEqual(p['confidence'], 'review')
+        self.assertTrue(p['title_only'])
+        self.assertIsNone(match_book(book, {'segments': speech['segments'][:1]})['proposals'][0]['start'])
 
     def test_openings_omissions_and_unmatched_sections(self):
         book = self.book([self.passage, 'omitted ' * 80 + self.other, 'Nothing similar appears in this recorded adaptation'])

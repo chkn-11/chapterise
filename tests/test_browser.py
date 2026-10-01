@@ -293,9 +293,11 @@ class BrowserSmoke(unittest.TestCase):
                 until("omittedSections.length === 1 && !rapidWindow.document.getElementById('controls').disabled")
                 self.assertEqual(popup("return d.getElementById('chapter-list').value;"), '2')
                 # Audio-only suggestions share the acceptance workflow.
+                evaluate("alignment.proposals.find(p => p.id === 'audio-test').text_match_start = 13; rows.push({start:12, originalStart:12, title:'Source track', kind:'existing', selected:true, pause:null})")
                 key('Enter')
                 until("rows.some(r => r.epubId === 'audio-test') && !rapidWindow.document.getElementById('controls').disabled")
-                self.assertEqual(evaluate("rows.find(r => r.epubId === 'audio-test').kind"), 'manual')
+                self.assertEqual(evaluate("rows.find(r => r.epubId === 'audio-test').kind"), 'existing')
+                self.assertEqual(evaluate("rows.filter(r => r.start === 12).length"), 1)
                 # Save failure keeps the current item available for retry.
                 evaluate("window.__realRapidCommit = window.chapteriseRapid.commit; window.chapteriseRapid.commit = async () => { throw Error('Simulated save failure'); }")
                 choose(0); key('Enter')
@@ -324,8 +326,9 @@ class BrowserSmoke(unittest.TestCase):
                 self.assertEqual(evaluate("rows.find(r => r.title === 'Extra intro').start"), 8)
                 popup("d.getElementById('close').click();")
                 until("!document.querySelector('main').inert")
+                evaluate('window.__rapidBeforeReload = true')
                 call('Page.reload')
-                until("typeof rows !== 'undefined' && Array.isArray(rows) && rows.some(r => r.title === 'Extra intro')")
+                until("!window.__rapidBeforeReload && typeof rows !== 'undefined' && Array.isArray(rows) && rows.some(r => r.title === 'Extra intro')")
                 self.assertEqual(evaluate("rows.find(r => r.title === 'Rapid renamed').start"), 1.25)
                 self.assertEqual(evaluate('omittedSections.length'), 1)
                 if os.environ.get('CHAPTERISE_TEST_SCREENSHOT'):

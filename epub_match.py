@@ -33,6 +33,7 @@ class PageText(HTMLParser):
     def __init__(self, html):
         super().__init__(convert_charrefs=True)
         self.parts, self.anchors, self.headings = [], {}, []
+        self.quotations, self.quote_stack = [], []
         self.hidden = 0
         self.feed(html)
 
@@ -42,6 +43,8 @@ class PageText(HTMLParser):
             self.hidden += 1
         if self.hidden:
             return
+        if tag == 'blockquote':
+            self.quote_stack.append(len(self.parts))
         if tag in {'p', 'div', 'br', 'li', 'section', 'h1', 'h2', 'h3', 'h4'}:
             self.parts.append('\n')
         for key in ('id', 'name'):
@@ -51,6 +54,8 @@ class PageText(HTMLParser):
             self.headings.append(len(self.parts))
 
     def handle_endtag(self, tag):
+        if not self.hidden and tag == 'blockquote' and self.quote_stack:
+            self.quotations.append((self.quote_stack.pop(), len(self.parts)))
         if tag in {'script', 'style', 'head'} and self.hidden:
             self.hidden -= 1
         if not self.hidden and tag in {'p', 'div', 'li', 'section', 'h1', 'h2', 'h3', 'h4'}:
@@ -59,6 +64,21 @@ class PageText(HTMLParser):
     def handle_data(self, text):
         if not self.hidden:
             self.parts.append(text)
+
+    def has_leading_epigraph(self, anchor):
+        """Recognize a short opening quotation plus attribution before a TOC heading.
+
+        Do not pull ordinary prose or earlier headed sections into a chapter.
+        The caller must also establish that this document has only one TOC target.
+        """
+        quotes = sorted((start, end) for start, end in self.quotations if end <= anchor)
+        if not quotes or any(position < anchor for position in self.headings):
+            return False
+        start, end = quotes[0]
+        prefix = ''.join(self.parts[:anchor])
+        return (not ''.join(self.parts[:start]).strip()
+                and 1 <= len(tokens(prefix)) <= 400
+                and len(tokens(''.join(self.parts[end:anchor]))) <= 80)
 
 
 def read_epub(path):
@@ -121,6 +141,7 @@ def read_epub(path):
                 all_parts.append('\n')
             boundaries = {}
             targets = defaultdict(set)
+            epigraph_count = 0
             for _, name, fragment in entries:
                 targets[name].add(fragment)
             for title, name, fragment in entries:
@@ -136,9 +157,16 @@ def read_epub(path):
                     # several different entries share that document.
                     warnings.append(f'Recovered contents entry from document start (missing anchor): {title}')
                     fragment = ''
-                position = offsets[name] + (pages[name].anchors[fragment] if fragment else 0)
+                local_start = pages[name].anchors[fragment] if fragment else 0
+                if (fragment and len(targets[name]) == 1
+                        and pages[name].has_leading_epigraph(local_start)):
+                    local_start = 0
+                    epigraph_count += 1
+                position = offsets[name] + local_start
                 # A parent part and its first child may point to the same location.
                 boundaries[position] = title or 'Untitled section'
+            if epigraph_count:
+                warnings.append(f'Included introductory quotations before contents anchors in {epigraph_count} sections. Review their audio boundaries.')
             if not boundaries:
                 warnings.append('No usable table of contents; using one section per spine document. Check the chapter list.')
                 for index, name in enumerate(spine):
@@ -149,8 +177,6 @@ def read_epub(path):
             for index, (start, title) in enumerate(ordered):
                 end = ordered[index + 1][0] if index + 1 < len(ordered) else len(all_parts)
                 text = ' '.join(''.join(all_parts[start:end]).split())
-                if not text:
-                    continue
                 identifier = hashlib.sha256(f'{index}:{title}:{text}'.encode()).hexdigest()[:24]
                 chapters.append({'id': identifier, 'title': title[:500], 'text': text,
                                  'word_count': len(tokens(text))})
@@ -263,7 +289,7 @@ def audio_extras(book, transcript, proposals):
     return extras
 
 
-def match_book(book, transcript, progress=None):
+def match_book(book, transcript, progress=None, existing_chapters=None):
     """Search unique phrase anchors, tolerate omissions, then enforce book order.
 
     Confidence labels describe evidence, not calibrated probability. Later passage
@@ -282,6 +308,28 @@ def match_book(book, transcript, progress=None):
         if title_words and book_words[:len(title_words)] == title_words:
             book_words = book_words[len(title_words):]
         candidates = []
+        # Illustration-only sections still have useful TOC titles. Require the
+        # full distinctive title near the start of a spoken passage; a mention
+        # of "sketchbook" alone is not evidence of a new section.
+        if not book_words and len(title_words) >= 3:
+            target = ''.join(title_words)
+            segments = transcript.get('segments', [])
+            for si, segment in enumerate(segments):
+                opening = tokens(segment['text'])
+                if (not opening or opening[0][0] != title_words[0][0] or
+                        SequenceMatcher(None, title_words[0], opening[0]).ratio() < .7):
+                    continue
+                nearby = [s['text'] for s in segments[si:si + 3]
+                          if s['start'] <= segment['start'] + 20]
+                spoken = tokens(' '.join(nearby))
+                similarity = max((SequenceMatcher(None, target, ''.join(spoken[:n])).ratio()
+                                  for n in range(max(2, len(title_words) - 2), len(title_words) + 3)), default=0)
+                if similarity >= .9:
+                    candidates.append({'start': segment['start'], 'book_offset': 0,
+                                       'book_excerpt': chapter['title'], 'audio_excerpt': ' '.join(nearby)[:700],
+                                       'matched_words': 0, 'score': round(similarity, 3),
+                                       'word_timing': False, 'weight': similarity,
+                                       'title_only': True})
         # Start near the opening, then widen the search when adaptations omit it.
         for offset in range(0, min(len(book_words), 2400), 32):
             passage = book_words[offset:offset + 64]
@@ -351,6 +399,8 @@ def match_book(book, transcript, progress=None):
             proposal.update({k: v for k, v in candidate.items() if k != 'weight'})
             proposal['confidence'] = 'strong' if strong else 'review'
             reasons = []
+            if candidate.get('title_only'):
+                reasons.append('Spoken title resembles this illustration-only EPUB section; verify the section and exact start')
             if candidate['book_offset'] > 12:
                 reasons.append(f"First match is {candidate['book_offset']} words into the chapter; the actual beginning may be earlier")
             if rivals:
@@ -363,6 +413,21 @@ def match_book(book, transcript, progress=None):
         elif groups[i]:
             proposal['reason'] = 'Matches conflict with the book chapter order. Locate this chapter manually.'
         proposals.append(proposal)
+    # Existing source metadata can retain spoken headings omitted by ASR.
+    # Only use a nearby earlier boundary for an opening-text match, never infer
+    # a chapter from a track number or snap a late-passage match back blindly.
+    boundaries = sorted({float(c['start_time']) for c in (existing_chapters or [])})
+    for i, proposal in enumerate(proposals):
+        start = proposal['start']
+        if start is None or proposal.get('book_offset', 999) > 12:
+            continue
+        previous = max((p['start'] for p in proposals[:i] if p['start'] is not None), default=-1)
+        nearby = [t for t in boundaries if previous < t <= start and start - t <= 30]
+        if nearby and nearby[-1] < start:
+            proposal['text_match_start'] = start
+            proposal['start'] = nearby[-1]
+            proposal['confidence'] = 'review'
+            proposal['reason'] += ' Using a nearby earlier chapter boundary from the source file to include a possible spoken heading. Confirm by listening.'
     proposals.extend(audio_extras(book, transcript, proposals))
     return {'proposals': proposals, 'engine': 'phrase-alignment-v3',
             'notice': 'Confidence describes matching evidence, not a probability. GraphicAudio omissions may move the first matched passage past the chapter start.'}

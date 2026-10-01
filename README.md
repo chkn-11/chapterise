@@ -32,7 +32,7 @@ Chapterise runs on your computer or Docker server. Audio and EPUB text are proce
 
 ## Install with Docker or Portainer
 
-Published image: **`ghcr.io/chkn-11/chapterise:v1.2`**
+Published image: **`ghcr.io/chkn-11/chapterise:v1.3`**
 
 The public image supports **Linux x86-64 (Intel/AMD)** and includes Python, FFmpeg, and CPU speech recognition. No registry login or host Python installation is needed. ARM and GPU images are not provided in this release.
 
@@ -43,7 +43,7 @@ Everything needed for deployment is in this file. No `.env`, server-IP setting, 
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.2
+    image: ghcr.io/chkn-11/chapterise:v1.3
     init: true
     restart: unless-stopped
     ports:
@@ -97,7 +97,7 @@ You can also run as a specific host user using Compose's native `user:` setting.
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.2
+    image: ghcr.io/chkn-11/chapterise:v1.3
     user: "1000:1000" # Replace with your host user's UID:GID.
     init: true
     restart: unless-stopped
@@ -118,8 +118,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release changes and upgrade notes.
 
 | Image tag | Purpose |
 | --- | --- |
-| `v1.2` | Current release; ordinary pushes to `main` do not advance this tag. |
-| `v1.1`, `v1` | Previous releases, retained for existing deployments. |
+| `v1.3` | Current release; ordinary pushes to `main` do not advance this tag. |
+| `v1.2`, `v1.1`, `v1` | Previous releases, retained for existing deployments. |
 | `latest` | The newest successfully published build from `main`. |
 | `sha-<full-commit-id>` | A build associated with a particular source commit. |
 
@@ -221,11 +221,17 @@ To change the model/language of an existing transcript, run **Generate searchabl
 
 **How it works:** EPUB 2 NCX and EPUB 3 navigation are supported, including chapter anchors within the same XHTML file. If there is no usable contents list, the parser falls back to one section per reading-order document and warns you. The matcher searches up to the first 2,400 words of each section, tolerates missing text, and enforces increasing chapter order. This is AI speech recognition plus phrase alignment, not an autonomous LLM agent.
 
+For documents with one distinct contents target, the parser also includes a short leading block quotation and its attribution before the linked heading. This prevents chapter epigraphs from being assigned to the preceding section. A parsing warning identifies when this rule is used. It does not move anchors in shared documents, ordinary prose, or earlier headed sections. Quotations omitted from the recording can still produce later-passage matches requiring review.
+
 If a contents link has a missing anchor but is the only distinct contents target in its document, the parser recovers the section from the document's beginning and shows a warning. Ambiguous links within shared documents are still skipped. For a previously uploaded EPUB, upload it again to apply parser improvements, then rerun matching with your saved transcript. Keep your review JSON backup: recovered sections can change proposal IDs, so existing markers may no longer show as already accepted. Your saved marker times/titles remain intact; check for duplicates before accepting new proposals.
 
 **New in v1.1:** matching also proposes internal audio-only production blocks, such as credits, adverts, and another part intro between story chapters. These are labelled **Audio-only suggestion** and require manual review; their timestamps identify spoken evidence, not necessarily the beginning of music. See [reviewing audio-only sections](#6-review-audio-only-intros-and-outros).
 
 **GraphicAudio and adaptations:** narration, prologues, or entire scenes may be cut or rearranged. A clear match hundreds of words into a chapter is a navigation clue, not its verified opening. Even a strong opening-text match may come after a spoken chapter heading or introductory music.
+
+For standard audiobooks, a reliable opening-text match can use an embedded source chapter boundary up to 30 seconds earlier to include a spoken heading omitted from the transcript. These suggestions remain **Needs review**, explain the adjustment, and reuse an unlinked existing marker when accepted. Numeric track labels alone are not treated as spoken chapter numbers.
+
+Illustration-only contents entries are retained even without extractable text. Distinctive spoken titles can provide review candidates; unmatched drawings or missing/poorly recognized headings still need manual placement. This does not perform OCR on illustrations. Re-upload an existing EPUB to expose previously dropped entries, then rerun matching with your saved transcript.
 
 ### Rapid review after EPUB matching
 
@@ -417,7 +423,7 @@ The speech model cache uses the recognition library's normal local cache. Docker
 
 ## Development and release checks
 
-Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.2`.
+Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.3`.
 
 Run the automated tests:
 
@@ -433,4 +439,4 @@ CHAPTERISE_TEST_BROWSER=/path/to/chromium python3 -m unittest discover -s tests 
 
 Tests use synthetic audio/EPUB fixtures and mocked speech output, without downloading models. They cover detection, EPUB matching, omissions/credits, review persistence, transcription checkpoints, approved exports, metadata verification, and HTTP access checks. Browser tests cover the user workflow, including root-page entry, uploads, sliders, search, removal/undo, and refresh restoration. These checks do not establish recognition accuracy on every audiobook.
 
-The publishing workflow builds the Linux AMD64 image, runs the tests inside it, and checks the root URL through a remapped Docker port with no environment configuration before pushing. `main` publishes `latest`; a Git tag such as `v1.2` publishes both that release tag and `latest` from the same tested image. Only tag a release when it should become the default deployment.
+The publishing workflow builds the Linux AMD64 image, runs the tests inside it, and checks the root URL through a remapped Docker port with no environment configuration before pushing. `main` publishes `latest`; a Git tag such as `v1.3` publishes both that release tag and `latest` from the same tested image. Only tag a release when it should become the default deployment.

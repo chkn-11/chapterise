@@ -414,10 +414,10 @@ function renderProposals() {
       accept.textContent = accepted ? "Added to review" : "Use this marker"; accept.disabled = busy || accepted;
       accept.onclick = () => {
         const existing = rows.find(r => Math.round(r.start * 1000) === Math.round(proposal.start * 1000));
-        if (existing && existing.start !== 0) {
+        if (existing && existing.start !== 0 && !(proposal.text_match_start !== undefined && existing.kind === 'existing' && !existing.epubId)) {
           message("A marker already exists at this time. Adjust or remove it before using this proposal.", true); return;
         }
-        if (existing) { existing.title = proposal.title; existing.epubId = proposal.id; }
+        if (existing) { existing.title = proposal.title; existing.epubId = proposal.id; existing.selected = true; }
         else rows.push({start: proposal.start, originalStart: proposal.start, title: proposal.title, selected: true,
                         kind: proposal.source === "audio" ? "manual" : "epub", pause: null, epubId: proposal.id, evidence: proposal.reason});
         omittedSections = omittedSections.filter(id => id !== proposal.id);
@@ -545,7 +545,9 @@ window.chapteriseRapid = {
       if (start < 0 || start >= state.duration) throw Error("Choose a boundary within the recording.");
       if (existing?.start === 0 && start !== 0) throw Error("The opening marker must remain at zero.");
       const collision = rows.find(r => r !== existing && Math.round(r.start * 1000) === Math.round(start * 1000));
-      if (collision && (start !== 0 || existing || manual || (collision.epubId && collision.epubId !== id)))
+      const sourceBoundary = !manual && !existing && proposal.text_match_start !== undefined &&
+        start === proposal.start && collision?.kind === 'existing' && !collision.epubId;
+      if (collision && !sourceBoundary && (start !== 0 || existing || manual || (collision.epubId && collision.epubId !== id)))
         throw Error("Another chapter occupies this time. Adjust the boundary before accepting.");
       existing ||= collision;
       if (existing) Object.assign(existing, {start, title, selected: true, ...(manual ? {} : {epubId: id})});
