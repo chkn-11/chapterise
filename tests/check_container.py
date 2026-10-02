@@ -38,6 +38,16 @@ def check(image, mounts, user=None):
         else:
             logs = subprocess.check_output(['docker', 'logs', container], text=True, stderr=subprocess.STDOUT)
             raise RuntimeError('Container did not become ready: ' + logs)
+        # Exercise the real faster-whisper/PyAV decoder without downloading a model.
+        subprocess.run(['docker', 'exec', container, 'ffmpeg', '-v', 'error',
+            '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=16000', '-t', '1',
+            '-c:a', 'pcm_s16le', '/tmp/decode-check.wav'], check=True)
+        subprocess.run(['docker', 'exec', container, 'python', '-c',
+            "import numpy as np; from faster_whisper.audio import decode_audio; "
+            "audio = decode_audio('/tmp/decode-check.wav'); "
+            "assert audio.dtype == np.float32 and audio.shape == (16000,); "
+            "assert np.isfinite(audio).all() and np.max(np.abs(audio)) > .01; "
+            "print('Real speech-decoder check passed.')"], check=True)
         if user:
             identity = subprocess.check_output(['docker', 'exec', container, 'python', '-c',
                 'import os; print(f"{os.getuid()}:{os.getgid()}")'], text=True).strip()

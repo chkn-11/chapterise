@@ -32,7 +32,7 @@ Chapterise runs on your computer or Docker server. Audio and EPUB text are proce
 
 ## Install with Docker or Portainer
 
-Published image: **`ghcr.io/chkn-11/chapterise:v1.3`**
+Published image: **`ghcr.io/chkn-11/chapterise:v1.3.1`**
 
 The public image supports **Linux x86-64 (Intel/AMD)** and includes Python, FFmpeg, and CPU speech recognition. No registry login or host Python installation is needed. ARM and GPU images are not provided in this release.
 
@@ -43,7 +43,7 @@ Everything needed for deployment is in this file. No `.env`, server-IP setting, 
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.3
+    image: ghcr.io/chkn-11/chapterise:v1.3.1
     init: true
     restart: unless-stopped
     ports:
@@ -97,7 +97,7 @@ You can also run as a specific host user using Compose's native `user:` setting.
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.3
+    image: ghcr.io/chkn-11/chapterise:v1.3.1
     user: "1000:1000" # Replace with your host user's UID:GID.
     init: true
     restart: unless-stopped
@@ -118,8 +118,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release changes and upgrade notes.
 
 | Image tag | Purpose |
 | --- | --- |
-| `v1.3` | Current release; ordinary pushes to `main` do not advance this tag. |
-| `v1.2`, `v1.1`, `v1` | Previous releases, retained for existing deployments. |
+| `v1.3.1` | Current release; ordinary pushes to `main` do not advance this tag. |
+| `v1.3`, `v1.2`, `v1.1`, `v1` | Previous releases, retained for existing deployments. |
 | `latest` | The newest successfully published build from `main`. |
 | `sha-<full-commit-id>` | A build associated with a particular source commit. |
 
@@ -423,7 +423,7 @@ The speech model cache uses the recognition library's normal local cache. Docker
 
 ## Development and release checks
 
-Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.3`.
+Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.3.1`.
 
 Run the automated tests:
 

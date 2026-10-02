@@ -1,7 +1,7 @@
 # Standalone deployment file; no source checkout or local build required.
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.3
+    image: ghcr.io/chkn-11/chapterise:v1.3.1
     init: true
     restart: unless-stopped
     ports:

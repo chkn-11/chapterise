@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.1 — 2026-10-02
+
+- Constrain PyAV to versions below 19 to fix `open() got an unexpected keyword argument metadata_errors` during speech decoding.
+- Add a real faster-whisper audio-decoding check to container CI for both default and custom users, without downloading a model.
+
+Upgrade: pull `ghcr.io/chkn-11/chapterise:v1.3.1` or `latest` and redeploy with the same volumes. Retry transcription or EPUB matching; existing completed transcription chunks can be reused. No audiobook metadata edits or re-upload are required. For direct Python installations, rerun pip installation from `requirements-transcription.txt` and restart the app.
+
 ## v1.3 — 2026-10-02
 
 - Retain illustration-only EPUB entries and search for distinctive spoken titles as review candidates.
