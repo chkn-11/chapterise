@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4 — 2026-10-02
+
+- Add a persistent serial transcription queue with multiple audiobook uploads, per-task model/language settings, and optional delayed starts.
+- Optionally match an attached EPUB after queued transcription.
+- Add queue pause/resume, priority changes, retries, removal, and restart recovery from completed chunks.
+- Allow reviewing and switching projects during queued transcription while preserving saved chapter edits and omission decisions.
+
+Upgrade: pull `ghcr.io/chkn-11/chapterise:v1.4` or `latest` and redeploy with the same data/model volumes. Keep the container running for scheduled tasks.
+
+Validation: all 38 regression tests passed, including browser batch uploads, queue controls, transcript loading, scheduling, pause/restart recovery, and preservation of manual review decisions.
+
 ## v1.3.1 — 2026-10-02
 
 - Constrain PyAV to versions below 19 to fix `open() got an unexpected keyword argument metadata_errors` during speech decoding.

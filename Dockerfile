@@ -21,7 +21,7 @@ RUN groupadd --gid 10001 chapterise \
     && mkdir /data /models \
     && chown chapterise:chapterise /data /models
 
-COPY app.py epub_match.py persistence.py transcription.py ./
+COPY app.py epub_match.py persistence.py transcription.py transcription_queue.py ./
 COPY static/ ./static/
 
 USER chapterise

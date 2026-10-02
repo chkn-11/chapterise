@@ -8,3 +8,4 @@
 !transcription.py
 !static/
 !static/**
+!transcription_queue.py

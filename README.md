@@ -30,9 +30,21 @@ Chapterise runs on your computer or Docker server. Audio and EPUB text are proce
 
 **Without an EPUB:** upload audio → **Scan for pauses**, transcribe, or add markers manually → review → approve → export.
 
+## Transcription backlog
+
+The **Transcription backlog** panel lets you upload multiple M4A/M4B books or queue the open saved project. Choose a model, optional language, and an optional earliest start time before adding tasks. The date/time uses your browser's local timezone. Leave it blank to start as soon as the worker is free. Settings are stored per task; changing the controls does not change tasks already queued.
+
+Enable **Match EPUB chapters afterwards** to run matching after transcription when the saved project has an EPUB. For new batch uploads, open their saved projects to attach EPUBs before processing reaches them, or run matching later.
+
+The queue processes one book at a time and continues with the next eligible task if a book fails. A task scheduled for later does not block books ready now. Use **Move earlier** to adjust priority, **Pause queue** / **Resume queue** to control processing, and retry or remove stopped tasks. Removing a task retains its uploaded source and saved project.
+
+You can review chapters, upload files, and switch projects during background transcription. Use **Load completed transcript** to refresh the open project's transcript after completion, or reopen its saved project. Background completion preserves chapter markers and omission decisions, and clears old matching results because the transcript has changed. Pause background transcription before starting foreground speech recognition or chapter matching.
+
+Tasks and completed five-minute transcription chunks live in the project workspace (`/data` in Docker). Closing the browser does not stop processing. The server/container must remain running for scheduled tasks to start. Interrupted tasks resume from completed chunks after a restart; a paused queue stays paused. The unfinished chunk is repeated when processing resumes.
+
 ## Install with Docker or Portainer
 
-Published image: **`ghcr.io/chkn-11/chapterise:v1.3.1`**
+Published image: **`ghcr.io/chkn-11/chapterise:v1.4`**
 
 The public image supports **Linux x86-64 (Intel/AMD)** and includes Python, FFmpeg, and CPU speech recognition. No registry login or host Python installation is needed. ARM and GPU images are not provided in this release.
 
@@ -43,7 +55,7 @@ Everything needed for deployment is in this file. No `.env`, server-IP setting, 
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.3.1
+    image: ghcr.io/chkn-11/chapterise:v1.4
     init: true
     restart: unless-stopped
     ports:
@@ -97,7 +109,7 @@ You can also run as a specific host user using Compose's native `user:` setting.
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.3.1
+    image: ghcr.io/chkn-11/chapterise:v1.4
     user: "1000:1000" # Replace with your host user's UID:GID.
     init: true
     restart: unless-stopped
@@ -118,8 +130,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release changes and upgrade notes.
 
 | Image tag | Purpose |
 | --- | --- |
-| `v1.3.1` | Current release; ordinary pushes to `main` do not advance this tag. |
-| `v1.3`, `v1.2`, `v1.1`, `v1` | Previous releases, retained for existing deployments. |
+| `v1.4` | Current release; ordinary pushes to `main` do not advance this tag. |
+| `v1.3.1`, `v1.3`, `v1.2`, `v1.1`, `v1` | Previous releases, retained for existing deployments. |
 | `latest` | The newest successfully published build from `main`. |
 | `sha-<full-commit-id>` | A build associated with a particular source commit. |
 
@@ -423,7 +435,7 @@ The speech model cache uses the recognition library's normal local cache. Docker
 
 ## Development and release checks
 
-Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.3.1`.
+Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.4`.
 
 Run the automated tests:
 

@@ -18,6 +18,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_app as fixtures
 import test_epub as epub_fixtures
+from transcription_queue import TranscriptionQueue
 from app import Session, ThreadingHTTPServer, handler_for, probe
 
 @unittest.skipUnless(os.environ.get("CHAPTERISE_TEST_BROWSER"), "Set CHAPTERISE_TEST_BROWSER to a Chromium browser binary")
@@ -35,9 +36,10 @@ class BrowserSmoke(unittest.TestCase):
         speech_mock = patch('app.transcribe_audio', return_value=speech)
         speech_mock.start()
         self.addCleanup(speech_mock.stop)
-        server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(
-            BrowserSession(fixtures.AudioTests.source, fixtures.AudioTests.directory / 'browser.m4a',
-                           fixtures.AudioTests.directory / 'projects')))
+        session = BrowserSession(fixtures.AudioTests.source, fixtures.AudioTests.directory / 'browser.m4a',
+                                 fixtures.AudioTests.directory / 'projects')
+        session.queue = TranscriptionQueue(session.workspace, session.queued_transcription, lambda: True)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(session))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         browser = None
         wire = None
@@ -105,6 +107,24 @@ class BrowserSmoke(unittest.TestCase):
                         time.sleep(.1)
                     raise AssertionError('Timed out: ' + expression + '\n' + str(evaluate('document.body.innerText')))
                 until("document.getElementById('filename')?.textContent === 'original.m4a'")
+                evaluate("queueAction('pause')")
+                evaluate("document.getElementById('queue-current').click()")
+                until("document.getElementById('queue-tasks').innerText.includes('pending')")
+                self.assertTrue(session.queue.paused)
+                original_project = session.project
+                payload = base64.b64encode(fixtures.AudioTests.source.read_bytes()).decode()
+                evaluate("(async () => { const bytes = Uint8Array.from(atob(" + json.dumps(payload) + "), c => c.charCodeAt(0)); const input = document.getElementById('queue-files'); const transfer = new DataTransfer(); transfer.items.add(new File([bytes], 'queued.m4a')); input.files = transfer.files; await input.onchange({target: input}); })()")
+                self.assertEqual(len(session.queue.tasks), 2)
+                self.assertEqual(session.project, original_project)
+                self.assertEqual(json.loads((session.workspace / 'last.json').read_text())['id'], original_project.name)
+                evaluate("queueAction('resume')")
+                session.queue.tick(); session.queue.tick()
+                evaluate("refreshQueue()")
+                self.assertEqual(evaluate("document.querySelectorAll('#queue-tasks .proposal').length"), 2)
+                self.assertIn('done', evaluate("document.getElementById('queue-tasks').innerText"))
+                evaluate("document.getElementById('queue-refresh-transcript').click()")
+                until("document.getElementById('queue-status').innerText.includes('Saved transcript loaded')")
+                self.assertFalse(evaluate("document.getElementById('review').disabled"))
                 self.assertTrue(evaluate("document.getElementById('export').disabled"))
                 evaluate("document.getElementById('spacing').value = '0'; document.getElementById('scan').click()")
                 until("document.getElementById('status').textContent.startsWith('Found 2')")
@@ -224,24 +244,24 @@ class BrowserSmoke(unittest.TestCase):
                 speech['segments'] = [epub_fixtures.transcript_passage(epub_fixtures.MatchingTests.passage, 1)]
                 evaluate("document.getElementById('align').click()")
                 until("document.getElementById('status').textContent.startsWith('EPUB matching finished')")
-                self.assertEqual(evaluate("document.querySelectorAll('.proposal').length"), 2)
+                self.assertEqual(evaluate("document.querySelectorAll('#proposals .proposal').length"), 2)
                 self.assertEqual(evaluate('rows.length'), 1)  # No automatic acceptance.
                 self.assertEqual(evaluate('alignment.proposals[0].start'), 1)
                 self.assertIsNone(evaluate('alignment.proposals[1].start'))
-                evaluate("document.querySelector('.proposal button').click()")
+                evaluate("document.querySelector('#proposals .proposal button').click()")
                 self.assertAlmostEqual(evaluate('audio.currentTime'), 1, places=3)
                 self.assertAlmostEqual(evaluate('previewEnd'), 11, places=3)
                 evaluate('audio.pause()')
-                evaluate("document.querySelector('.proposal button:nth-child(2)').click()")
+                evaluate("document.querySelector('#proposals .proposal button:nth-child(2)').click()")
                 self.assertEqual(evaluate('rows.length'), 2)
                 self.assertEqual(evaluate('rows[1].kind'), 'epub')
                 self.assertTrue(evaluate("document.getElementById('export').disabled"))
                 evaluate("document.querySelector('#rows tr:nth-child(2) .remove-marker').click(); document.getElementById('undo-remove').click()")
                 self.assertEqual(evaluate('rows.length'), 2)
-                self.assertTrue(evaluate("document.querySelector('.proposal button:nth-child(2)').disabled"))
-                evaluate("document.querySelectorAll('.proposal')[1].querySelector('.omit-section').click()")
+                self.assertTrue(evaluate("document.querySelector('#proposals .proposal button:nth-child(2)').disabled"))
+                evaluate("document.querySelectorAll('#proposals .proposal')[1].querySelector('.omit-section').click()")
                 self.assertEqual(evaluate('omittedSections.length'), 1)
-                self.assertIn('Marked not present', evaluate("document.querySelectorAll('.proposal .confidence')[1].textContent"))
+                self.assertIn('Marked not present', evaluate("document.querySelectorAll('#proposals .proposal .confidence')[1].textContent"))
                 evaluate('persistReview()')
                 evaluate('window.__chapteriseBeforeReload = true')
                 call('Page.reload')
@@ -249,8 +269,8 @@ class BrowserSmoke(unittest.TestCase):
                 self.assertFalse(evaluate("document.getElementById('approved').checked"))
                 self.assertEqual(evaluate('rows[1].title'), 'First')
                 self.assertEqual(evaluate('omittedSections.length'), 1)
-                self.assertEqual(evaluate("document.querySelectorAll('.proposal')[1].querySelector('.omit-section').textContent"), 'Reconsider section')
-                evaluate("document.querySelectorAll('.proposal')[1].querySelector('.omit-section').click()")
+                self.assertEqual(evaluate("document.querySelectorAll('#proposals .proposal')[1].querySelector('.omit-section').textContent"), 'Reconsider section')
+                evaluate("document.querySelectorAll('#proposals .proposal')[1].querySelector('.omit-section').click()")
                 self.assertEqual(evaluate('omittedSections.length'), 0)
                 evaluate('persistReview()')
                 self.assertEqual(evaluate('transcript.segments.length'), 1)

@@ -3,7 +3,7 @@
 # For host folders and a custom UID:GID, use compose.bind.yaml.
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.3.1
+    image: ghcr.io/chkn-11/chapterise:v1.4
     init: true
     restart: unless-stopped
     ports:

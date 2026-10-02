@@ -6,6 +6,7 @@
   <title>Chapterise — pause, listen, mark</title>
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
+  <script src="queue.js" defer></script>
 </head>
 <body>
   <main>
@@ -23,6 +24,21 @@
       </fieldset>
       <progress id="upload-progress" max="100" value="0" hidden></progress>
       <p id="save-status" class="hint" role="status"></p>
+    </section>
+    <section>
+      <h2>Transcription backlog</h2>
+      <p class="hint">Queue saved projects or upload several audiobooks. One book runs at a time, even with the browser closed. Keep the server running. You can review chapters while the queue works.</p>
+      <div class="manual-fields">
+        <label>Model for new tasks<select id="queue-model"><option value="tiny">Tiny — fastest</option><option value="base" selected>Base — balanced</option><option value="small">Small — more accurate, slower</option></select></label>
+        <label>Language (optional)<input id="queue-language" maxlength="3" placeholder="Automatic, or en"></label>
+        <label>Start no earlier than (your local time)<input id="queue-start" type="datetime-local"></label>
+        <label>Add audiobooks<input id="queue-files" type="file" multiple accept=".m4b,.m4a"></label>
+      </div>
+      <label><input id="queue-align" type="checkbox"> Match EPUB chapters afterwards, if this project has an EPUB</label>
+      <div class="toolbar"><button id="queue-current">Queue open project</button><button id="queue-pause">Pause queue</button><button id="queue-resume">Resume queue</button><button id="queue-refresh-transcript">Load completed transcript</button></div>
+      <p class="hint">Settings and start time are saved separately for each task. Pause stops the current task at the next safe point; the unfinished chunk is repeated on resume. Removing a task keeps its uploaded book and saved project.</p>
+      <p id="queue-status" role="status"></p>
+      <div id="queue-tasks"></div>
     </section>
     <section class="player">
       <div class="fileline"><h2 id="filename">Loading audio…</h2><span id="duration"></span></div>

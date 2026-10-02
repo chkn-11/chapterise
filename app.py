@@ -20,6 +20,7 @@ from urllib.parse import urlsplit, unquote, quote
 from transcription import transcribe_audio, validate_options
 from epub_match import read_epub, match_book
 from persistence import save_json
+from transcription_queue import TranscriptionQueue
 
 
 STATIC = Path(__file__).parent / "static"
@@ -254,6 +255,8 @@ class Session:
         self.transcript = self.book = self.alignment = None
         self.omitted_sections = []
         self.notice = ''
+        self.speech_lock = threading.Lock()
+        self.queue = None
         if self.workspace:
             self.workspace.mkdir(parents=True, exist_ok=True)
         if source:
@@ -263,6 +266,56 @@ class Session:
                 self.open_project(json.loads((self.workspace / 'last.json').read_text())['id'])
             except (ValueError, OSError, KeyError) as error:
                 self.notice = f'Could not reopen the previous project: {error}'
+
+    def enable_queue(self):
+        if self.workspace and self.queue is None:
+            self.queue = TranscriptionQueue(self.workspace, self.queued_transcription,
+                                            lambda: self.job['status'] != 'running')
+            self.queue.start()
+
+    def queued_transcription(self, task, progress, cancelled):
+        with self.speech_lock:
+            project = self.workspace / task['project']
+            with self.lock:
+                if self.job['status'] == 'running':
+                    raise InterruptedError('Foreground processing is running.')
+                data = json.loads((project / 'project.json').read_text())
+            source = Path(data['source'])
+            def verify():
+                stat = source.stat()
+                if (stat.st_size, stat.st_mtime_ns, stat.st_ino) != tuple(data['fingerprint']):
+                    raise ValueError('The source file changed; upload it again.')
+            verify()
+            transcript = transcribe_audio(source, data['duration'], task['model'], task['language'],
+                                          progress, checkpoint_dir=project / 'chunks',
+                                          cancelled=cancelled, word_timestamps=True)
+            verify()
+            with self.lock:
+                # Reload the latest review rather than writing the worker's old copy.
+                current = json.loads((project / 'project.json').read_text())
+                if current['fingerprint'] != data['fingerprint']:
+                    raise ValueError('The project source changed during transcription.')
+                current.update(transcript=transcript, alignment=None)
+                save_json(project / 'project.json', current)
+                if self.project == project:
+                    self.transcript, self.alignment = transcript, None
+
+            if task.get('align') and current.get('book'):
+                book = current['book']
+                def matching_progress(value, detail):
+                    if cancelled():
+                        raise InterruptedError('Matching paused; transcript saved.')
+                    progress(value, detail)
+                alignment = match_book(book, transcript, matching_progress,
+                                       existing_chapters=probe(source).get('chapters', []))
+                verify()
+                with self.lock:
+                    latest = json.loads((project / 'project.json').read_text())
+                    if latest.get('book') == book and latest.get('transcript') == transcript:
+                        latest['alignment'] = alignment
+                        save_json(project / 'project.json', latest)
+                        if self.project == project:
+                            self.alignment = alignment
 
     def load_source(self, source, output=None):
         info = probe(source)
@@ -346,6 +399,14 @@ class Session:
             self.job.update(progress=value, detail=detail)
 
     def transcribe(self, settings):
+        if not self.speech_lock.acquire(blocking=False):
+            raise ValueError("Background transcription is running. Pause the queue first.")
+        try:
+            return self._transcribe(settings)
+        finally:
+            self.speech_lock.release()
+
+    def _transcribe(self, settings):
         options = {}
         if self.project:
             options = {'checkpoint_dir': self.project / 'chunks', 'cancelled': self.cancelled.is_set,
@@ -378,8 +439,10 @@ class Session:
             self.persist()
         return {'operation': 'align', 'count': sum(p['start'] is not None for p in result['proposals'])}
 
-    def start_job(self, operation, cancellable=False):
+    def start_job(self, operation, cancellable=False, speech=False):
         with self.lock:
+            if speech and self.speech_lock.locked():
+                raise ValueError('Pause background transcription before starting speech processing.')
             if self.job['status'] == 'running':
                 raise ValueError('An operation is already running.')
             self.job = {'status': 'running', 'progress': 0, 'cancellable': cancellable}
@@ -489,15 +552,18 @@ def handler_for(session, token=None, public_origin=None):
                         {k: c[k] for k in ('id', 'title', 'word_count')} for c in session.book['chapters']],
                         'warnings': session.book['warnings']} if session.book else None,
                         'alignment': session.alignment})
+                elif route == "api/queue":
+                    self.json(session.queue.state() if session.queue else {"paused": True, "tasks": []})
                 elif route == "api/projects":
                     self.json(session.projects())
                 elif route == "export" and session.output and session.output.is_file():
                     self.audio(session.output, download=True)
                 elif route == "audio" and session.source:
                     self.audio()
-                elif route in {"", "app.js", "style.css", "rapid-review.html", "rapid-review.js"}:
+                elif route in {"", "app.js", "style.css", "rapid-review.html", "rapid-review.js", "queue.js"}:
                     filename, kind = {"": ("index.html", "text/html; charset=utf-8"),
                                       "app.js": ("app.js", "text/javascript"),
+                                      "queue.js": ("queue.js", "text/javascript"),
                                       "rapid-review.html": ("rapid-review.html", "text/html; charset=utf-8"),
                                       "rapid-review.js": ("rapid-review.js", "text/javascript"),
                                       "style.css": ("style.css", "text/css")}[route]
@@ -557,7 +623,8 @@ def handler_for(session, token=None, public_origin=None):
             name = unquote(self.headers.get('X-File-Name', ''))
             if not name or Path(name).name != name or '\\' in name or any(ord(c) < 32 for c in name):
                 raise ValueError('Invalid upload filename.')
-            audio = route.endswith('/audio')
+            queued = route == 'api/upload/queue'
+            audio = queued or route.endswith('/audio')
             suffixes = {'.m4a', '.m4b'} if audio else {'.epub'}
             if Path(name).suffix.lower() not in suffixes:
                 raise ValueError('Choose an M4A/M4B audio file or an EPUB book.')
@@ -566,11 +633,12 @@ def handler_for(session, token=None, public_origin=None):
             if not 0 < length <= maximum:
                 raise ValueError('Upload exceeds the size limit (32 GB audio / 100 MB EPUB).')
             with session.lock:
-                if session.job['status'] == 'running':
+                if not queued and session.job['status'] == 'running':
                     raise ValueError('An operation is already running.')
                 if not audio and not session.source:
                     raise ValueError('Upload the audiobook first.')
-                session.job = {'status': 'running', 'progress': 0, 'detail': 'Receiving file…'}
+                if not queued:
+                    session.job = {'status': 'running', 'progress': 0, 'detail': 'Receiving file…'}
             directory = None
             try:
                 directory = Path(tempfile.mkdtemp(prefix='upload-', dir=session.workspace))
@@ -586,7 +654,18 @@ def handler_for(session, token=None, public_origin=None):
                             raise ValueError('Upload interrupted. Select the file and retry.')
                         output.write(block)
                         remaining -= len(block)
-                if audio:
+                if queued:
+                    with session.lock:
+                        last = session.workspace / 'last.json'
+                        remembered = json.loads(last.read_text()) if last.exists() else None
+                        temporary = Session(path, workspace=session.workspace)
+                        if remembered is not None:
+                            save_json(last, remembered)
+                        else:
+                            last.unlink(missing_ok=True)
+                    directory = None
+                    identifier = temporary.project.name
+                elif audio:
                     session.load_source(path)
                     directory = None  # The project owns the uploaded source now.
                 else:
@@ -599,8 +678,9 @@ def handler_for(session, token=None, public_origin=None):
                 if directory:
                     shutil.rmtree(directory)
                 with session.lock:
-                    session.job = {'status': 'idle', 'progress': 0}
-            self.json({'status': 'loaded'})
+                    if not queued:
+                        session.job = {'status': 'idle', 'progress': 0}
+            self.json({'status': 'loaded', **({'project': identifier} if queued else {})})
 
         def do_POST(self):
             route = self.route()
@@ -616,7 +696,7 @@ def handler_for(session, token=None, public_origin=None):
                         raise ValueError("Unexpected request origin.")
                 if self.headers.get('Sec-Fetch-Site') == 'cross-site':
                     raise ValueError('Unexpected cross-site request.')
-                if route in {'api/upload/audio', 'api/upload/epub'}:
+                if route in {'api/upload/audio', 'api/upload/epub', 'api/upload/queue'}:
                     self.upload(route)
                     return
                 if self.headers.get("Content-Type") != "application/json":
@@ -627,6 +707,21 @@ def handler_for(session, token=None, public_origin=None):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("Expected a JSON object.")
+                if route == 'api/queue':
+                    if not session.queue:
+                        raise ValueError('Queue requires a project workspace.')
+                    action = body.get('action')
+                    if action == 'add':
+                        identifier = body.get('project')
+                        if not isinstance(identifier, str) or not re.fullmatch(r'[a-f0-9]{24}', identifier):
+                            raise ValueError('Invalid project identifier.')
+                        with session.lock:
+                            data = json.loads((session.workspace / identifier / 'project.json').read_text())
+                        session.queue.add(identifier, Path(data['source']).name, body)
+                    else:
+                        session.queue.action(action, body.get('id'))
+                    self.json(session.queue.state())
+                    return
                 if route == 'api/cancel':
                     session.cancelled.set()
                     self.json({'status': 'pausing'})
@@ -656,10 +751,12 @@ def handler_for(session, token=None, public_origin=None):
                     self.json({'status': 'saved'})
                     return
                 if route == 'api/align':
+                    if session.speech_lock.locked():
+                        raise ValueError('Pause background transcription before matching chapters.')
                     validate_options(body.get('model', 'base'), body.get('language') or None)
                     if not session.book:
                         raise ValueError('Upload the matching EPUB first.')
-                    session.start_job(lambda: session.align(body), cancellable=True)
+                    session.start_job(lambda: session.align(body), cancellable=True, speech=True)
                 elif route == "api/scan":
                     # Validate before launching a long-running job.
                     number(body.get("noise", -35), "Silence threshold", -90, -5)
@@ -668,7 +765,7 @@ def handler_for(session, token=None, public_origin=None):
                     session.start_job(lambda: session.scan(body))
                 elif route == "api/transcribe":
                     validate_options(body.get("model", "base"), body.get("language") or None)
-                    session.start_job(lambda: session.transcribe(body), cancellable=True)
+                    session.start_job(lambda: session.transcribe(body), cancellable=True, speech=True)
                 elif route == "api/export":
                     if body.get("approved") is not True:
                         raise ValueError("Review and approve the chapter list first.")
@@ -717,6 +814,7 @@ def main():
             session.book = read_epub(args.epub.expanduser())
             session.alignment = None
             session.persist()
+        session.enable_queue()
         server = ThreadingHTTPServer((args.host, args.port), handler_for(session, public_origin=public_origin))
     except (ValueError, OSError) as error:
         parser.error(str(error))
@@ -729,6 +827,9 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
+        if session.queue:
+            session.queue.cancel.set()
+            session.queue.stopped.set()
         server.server_close()
 
 
