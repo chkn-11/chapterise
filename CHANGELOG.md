@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5 — 2026-10-03
+
+- Promote the tested compact workspace UI, persistent audio playback, contextual controls and mobile chapter layout to stable.
+- Recognise expected spoken chapter and part headings before reliable opening prose, with word timing and chapter-order checks.
+- Tighten sparse source-track adjustments while preserving dense chapter maps corroborated by many strong opening matches.
+- Retain original text evidence and flag missing opening words for manual review.
+
+Validation: all 44 local tests passed, including browser workflows. Six recording comparisons lost no matches or worsened compared saved review boundaries. Well of Ascension improved 57 boundaries, with median absolute error falling from 3.75 to 0.66 seconds across 66 reviewed sections.
+
+Upgrade: pull `ghcr.io/chkn-11/chapterise:v1.5` or `latest` and redeploy with the same data/model volumes. Save a review JSON backup, then rerun **Find EPUB chapters** using the saved transcript to generate revised suggestions. Existing accepted markers stay unchanged. Test-stack users may also switch their image to v1.5 while keeping their test volumes.
+
 ## v1.5.0-beta.2 — 2026-10-03 (matching test release)
 
 - Recognise expected spoken chapter and part numbers immediately before opening prose, using word timestamps and chapter-order constraints.

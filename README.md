@@ -44,17 +44,15 @@ Tasks and completed five-minute transcription chunks live in the project workspa
 
 Matching can refine an opening-text suggestion to an immediately preceding spoken chapter or part number when the expected number, word timing, and chapter order agree. It retains the original prose-evidence timestamp. Sparse embedded source tracks are used only within a quiet lead-in; dense chapter maps need corroboration from many strong opening matches. Missing headings and unmatched opening words still require listening and manual boundary review. Existing accepted markers are never moved automatically when matching is rerun.
 
-## UI test release
+## Workspace interface
 
-The `ui-workspace-test` branch introduces a compact workspace interface. Use `ghcr.io/chkn-11/chapterise:v1.5.0-beta.2` for this fixed prerelease or `ui-test` for the newest tested build on that branch. Beta images do not update stable `latest`.
+Use the navigation to switch between projects, transcription queue, detection, transcript search, chapter review and approved export. Audio playback stays at the bottom. On mobile, chapter controls stack vertically and navigation scrolls horizontally. Full filenames remain available in **Project details**. Expand **Pause settings**, contextual help, and **Add a chapter** when needed.
 
-[compose.test.yaml](compose.test.yaml) runs the test version on port **8766** with separate test data/model volumes. Deploy it as a separate Portainer stack to try the interface alongside your stable installation. Existing projects can be imported using review JSON and uploaded originals; stable and test instances should use separate data volumes.
-
-Desktop navigation groups projects, queue, detection, search, review and export into separate workspaces. On mobile the navigation scrolls horizontally and chapter controls stack vertically. Audio playback stays at the bottom; full filenames remain available in **Project details**. Use **Pause settings**, **How this works**, and **Add a chapter** to expand contextual controls.
+The UI and matching improvements tested in `v1.5.0-beta.1` and `v1.5.0-beta.2` are included in stable **v1.5**. The `ui-workspace-test` branch and `ui-test` image remain separate from stable publishing; beta images do not update `latest`. [compose.test.yaml](compose.test.yaml) remains available for a separate test stack on port 8766 with separate data/model volumes.
 
 ## Install with Docker or Portainer
 
-Published image: **`ghcr.io/chkn-11/chapterise:v1.4`**
+Published image: **`ghcr.io/chkn-11/chapterise:v1.5`**
 
 The public image supports **Linux x86-64 (Intel/AMD)** and includes Python, FFmpeg, and CPU speech recognition. No registry login or host Python installation is needed. ARM and GPU images are not provided in this release.
 
@@ -65,7 +63,7 @@ Everything needed for deployment is in this file. No `.env`, server-IP setting, 
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.4
+    image: ghcr.io/chkn-11/chapterise:v1.5
     init: true
     restart: unless-stopped
     ports:
@@ -119,7 +117,7 @@ You can also run as a specific host user using Compose's native `user:` setting.
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.4
+    image: ghcr.io/chkn-11/chapterise:v1.5
     user: "1000:1000" # Replace with your host user's UID:GID.
     init: true
     restart: unless-stopped
@@ -140,8 +138,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release changes and upgrade notes.
 
 | Image tag | Purpose |
 | --- | --- |
-| `v1.4` | Current release; ordinary pushes to `main` do not advance this tag. |
-| `v1.3.1`, `v1.3`, `v1.2`, `v1.1`, `v1` | Previous releases, retained for existing deployments. |
+| `v1.5` | Current release; ordinary pushes to `main` do not advance this tag. |
+| `v1.4`, `v1.3.1`, `v1.3`, `v1.2`, `v1.1`, `v1` | Previous releases, retained for existing deployments. |
 | `latest` | The newest successfully published build from `main`. |
 | `sha-<full-commit-id>` | A build associated with a particular source commit. |
 
@@ -445,7 +443,7 @@ The speech model cache uses the recognition library's normal local cache. Docker
 
 ## Development and release checks
 
-Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.4`.
+Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.5`.
 
 Run the automated tests:
 
