@@ -560,10 +560,11 @@ def handler_for(session, token=None, public_origin=None):
                     self.audio(session.output, download=True)
                 elif route == "audio" and session.source:
                     self.audio()
-                elif route in {"", "app.js", "style.css", "rapid-review.html", "rapid-review.js", "queue.js"}:
+                elif route in {"", "app.js", "style.css", "rapid-review.html", "rapid-review.js", "queue.js", "workspace.js"}:
                     filename, kind = {"": ("index.html", "text/html; charset=utf-8"),
                                       "app.js": ("app.js", "text/javascript"),
                                       "queue.js": ("queue.js", "text/javascript"),
+                                      "workspace.js": ("workspace.js", "text/javascript"),
                                       "rapid-review.html": ("rapid-review.html", "text/html; charset=utf-8"),
                                       "rapid-review.js": ("rapid-review.js", "text/javascript"),
                                       "style.css": ("style.css", "text/css")}[route]

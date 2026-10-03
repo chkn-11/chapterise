@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.0-beta.1 — 2026-10-03 (UI test release)
+
+- Replace the long configuration page with workspace navigation for projects, transcription queue, detection, transcript search, review and export.
+- Add a compact project header and persistent bottom audio player; retain exact ten-second previews.
+- Collapse help, pause settings and manual chapter insertion until needed.
+- Stack chapter controls on mobile without horizontal table scrolling.
+- Publish the test branch as `ui-test` and beta tags separately; stable `latest` remains unchanged.
+
+Try `compose.test.yaml` on port 8766 with separate project/model volumes, or deploy `ghcr.io/chkn-11/chapterise:v1.5.0-beta.1`.
+
 ## v1.4 — 2026-10-02
 
 - Add a persistent serial transcription queue with multiple audiobook uploads, per-task model/language settings, and optional delayed starts.

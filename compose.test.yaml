@@ -1,0 +1,15 @@
+# UI prerelease. Use separate test volumes; stable deployments can keep v1.4.
+services:
+  chapterise:
+    image: ghcr.io/chkn-11/chapterise:v1.5.0-beta.1
+    init: true
+    restart: unless-stopped
+    ports:
+      - "8766:8765"
+    volumes:
+      - test-projects:/data
+      - test-models:/models
+
+volumes:
+  test-projects:
+  test-models:

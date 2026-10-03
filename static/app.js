@@ -38,6 +38,7 @@ function manualTime() {
   return ms / 1000;
 }
 function updateControls() {
+  if (window.syncWorkspace) window.syncWorkspace();
   const unloaded = !state?.filename;
   $("project-controls").disabled = busy;
   $("epub-upload").disabled = unloaded;
@@ -102,7 +103,11 @@ function render() {
     const tr = document.createElement("tr");
     tr.classList.toggle("unselected", !row.selected);
     tr.classList.toggle("new-marker", row === highlightedRow);
-    const cells = Array.from({length: 5}, () => tr.appendChild(document.createElement("td")));
+    const cells = Array.from({length: 5}, (_, i) => {
+      const cell = tr.appendChild(document.createElement("td"));
+      cell.dataset.label = ["Keep", "Start", "Chapter title & nearby speech", "Source", "Actions"][i];
+      return cell;
+    });
     const snippet = document.createElement("p"); snippet.className = "snippet";
     const keep = document.createElement("input");
     keep.type = "checkbox"; keep.checked = row.selected; keep.disabled = row.start === 0;
@@ -181,6 +186,8 @@ function render() {
       $("manual-title").value = "";
       audio.currentTime = midpoint;
       manualMessage(`Looking between ${timestamp(row.start)} and ${timestamp(nextStart)}. Starting at the midpoint; listen and adjust the time, then add the break.`);
+      $("manual-details").open = true;
+      if (window.showWorkspace) window.showWorkspace("review");
       $("manual-time").focus();
       $("manual-form").scrollIntoView({block: "nearest"});
     };
@@ -431,6 +438,8 @@ function renderProposals() {
       $("manual-title").value = proposal.title;
       $("manual-time").value = timestamp(proposal.start ?? audio.currentTime);
       manualMessage("Locate this EPUB chapter in the audio, then add the missing break.");
+      $("manual-details").open = true;
+      if (window.showWorkspace) window.showWorkspace("review");
       $("manual-time").focus(); $("manual-form").scrollIntoView({block: "nearest"});
     };
     actions.append(locate);

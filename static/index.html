@@ -7,14 +7,39 @@
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
   <script src="queue.js" defer></script>
+  <script src="workspace.js" defer></script>
 </head>
-<body>
+<body class="workshop">
   <main>
-    <header><span class="eyebrow">LOCAL AUDIO WORKSHOP</span><h1>Chapterise<span>.</span></h1>
-      <p>Find the pauses. Listen for a new chapter. Keep the breaks that belong.</p></header>
-    <section>
+    <aside class="workflow-sidebar">
+      <a class="brand" href="#review">Chapterise<span>.</span></a>
+      <span class="eyebrow">AUDIO WORKSHOP</span>
+      <nav aria-label="Workspace">
+        <button data-workspace="projects">Projects</button>
+        <button data-workspace="queue">Transcription queue</button>
+        <button data-workspace="detect">Detect chapters</button>
+        <button data-workspace="transcript">Search transcript</button>
+        <button data-workspace="review">Review chapters</button>
+        <button data-workspace="export">Approve &amp; export</button>
+      </nav>
+      <p class="sidebar-note">Local processing.<br>Your original stays untouched.</p>
+    </aside>
+    <div class="workspace-content">
+      <header class="project-header">
+        <span class="eyebrow" id="workspace-heading">REVIEW CHAPTERS</span>
+        <h1 id="project-name">Choose an audiobook</h1>
+        <p id="project-summary">Open a saved project or upload a book to begin.</p>
+        <details class="project-details"><summary>Project details</summary><div class="fileline"><span id="filename">Loading audio…</span><span id="duration"></span></div></details>
+      </header>
+      <div class="workspace-feedback" aria-label="Processing and saving status">
+        <button id="pause-job" hidden>Pause processing</button>
+        <progress id="progress" max="100" value="0" hidden></progress>
+        <p id="status" role="status" aria-live="polite">Ready. Choose a workspace to begin.</p>
+        <p id="save-status" class="hint" role="status"></p>
+      </div>
+    <section id="view-projects" data-view="projects" hidden>
       <h2>Open a chaptering project</h2>
-      <p class="hint">Choose an audiobook and its matching EPUB. Files and processing stay on this computer. Completed transcription chunks and chapter edits are saved locally.</p>
+      <details class="help"><summary>How this works</summary><p class="hint">Choose an audiobook and its matching EPUB. Files and processing stay on this computer. Completed transcription chunks and chapter edits are saved locally.</p></details>
       <fieldset id="project-controls">
         <div class="manual-fields">
           <label>Audiobook (.m4b / .m4a)<input id="audio-upload" type="file" accept=".m4b,.m4a,audio/mp4"></label>
@@ -23,11 +48,11 @@
         <div class="toolbar"><label>Saved project<select id="project-list"><option value="">Choose a saved project…</option></select></label><button id="open-project">Open saved project</button></div>
       </fieldset>
       <progress id="upload-progress" max="100" value="0" hidden></progress>
-      <p id="save-status" class="hint" role="status"></p>
+
     </section>
-    <section>
+    <section id="view-queue" data-view="queue" hidden>
       <h2>Transcription backlog</h2>
-      <p class="hint">Queue saved projects or upload several audiobooks. One book runs at a time, even with the browser closed. Keep the server running. You can review chapters while the queue works.</p>
+      <details class="help"><summary>How the queue works</summary><p class="hint">Queue saved projects or upload several audiobooks. One book runs at a time, even with the browser closed. Keep the server running. You can review chapters while the queue works.</p></details>
       <div class="manual-fields">
         <label>Model for new tasks<select id="queue-model"><option value="tiny">Tiny — fastest</option><option value="base" selected>Base — balanced</option><option value="small">Small — more accurate, slower</option></select></label>
         <label>Language (optional)<input id="queue-language" maxlength="3" placeholder="Automatic, or en"></label>
@@ -36,29 +61,24 @@
       </div>
       <label><input id="queue-align" type="checkbox"> Match EPUB chapters afterwards, if this project has an EPUB</label>
       <div class="toolbar"><button id="queue-current">Queue open project</button><button id="queue-pause">Pause queue</button><button id="queue-resume">Resume queue</button><button id="queue-refresh-transcript">Load completed transcript</button></div>
-      <p class="hint">Settings and start time are saved separately for each task. Pause stops the current task at the next safe point; the unfinished chunk is repeated on resume. Removing a task keeps its uploaded book and saved project.</p>
+      <details class="help"><summary>Scheduling and pausing</summary><p class="hint">Settings and start time are saved separately for each task. Pause stops the current task at the next safe point; the unfinished chunk is repeated on resume. Removing a task keeps its uploaded book and saved project.</p></details>
       <p id="queue-status" role="status"></p>
       <div id="queue-tasks"></div>
     </section>
-    <section class="player">
-      <div class="fileline"><h2 id="filename">Loading audio…</h2><span id="duration"></span></div>
-      <audio id="audio" controls preload="metadata" ></audio>
-      <p id="playback-help">Preview starts at the exact timestamp and plays the next 10 seconds, or until the audio ends.</p>
-    </section>
-    <section>
-      <h2><span class="step">01</span> Find possible breaks</h2>
-      <fieldset id="settings"><div class="settings">
+    <section id="view-detect-pauses" data-view="detect" hidden>
+      <h2>Pause detection</h2>
+      <fieldset id="settings"><details class="help"><summary>Pause settings</summary><div class="settings">
         <label>Minimum pause (seconds)<input id="minimum" type="number" min="0.1" max="120" step="0.1" value="2"></label>
         <label>Silence threshold (dB)<input id="noise" type="number" min="-90" max="-5" value="-35"></label>
         <label>Suggested chapter spacing (seconds)<input id="spacing" type="number" min="0" max="86400" value="60"></label>
-      </div><p class="hint">A threshold nearer zero detects quieter speech as silence. Spacing selects likely breaks; shorter gaps remain available to review.</p>
+      </div><p class="hint">A threshold nearer zero detects quieter speech as silence. Spacing selects likely breaks; shorter gaps remain available to review.</p></details>
       <button id="scan" class="primary">Scan for pauses</button></fieldset>
-      <progress id="progress" max="100" value="0" hidden></progress>
-      <p id="status" role="status" aria-live="polite">Ready to scan. Your audio stays on this computer.</p>
+
+
     </section>
-    <section>
+    <section id="view-transcript" data-view="transcript" hidden>
       <h2>Search the spoken audio</h2>
-      <p class="hint">Optional local speech-to-text. The first run downloads a model; your audio stays on this computer. Transcripts can contain mistakes.</p>
+      <details class="help"><summary>How this works</summary><p class="hint">Optional local speech-to-text. The first run downloads a model; your audio stays on this computer. Transcripts can contain mistakes.</p></details>
       <fieldset id="transcription-settings">
         <div class="manual-fields">
           <label>Speech model<select id="speech-model"><option value="tiny">Tiny — fastest</option><option value="base" selected>Base — balanced</option><option value="small">Small — more accurate, slower</option></select></label>
@@ -70,25 +90,26 @@
       <div id="transcript-panel" hidden>
         <label class="transcript-search">Search transcript<input id="transcript-query" type="search" placeholder="Find a word or phrase…"></label>
         <p id="transcript-count" class="hint" role="status"></p>
-        <p class="hint">Select a result to listen and fill the manual chapter time. Save review JSON to keep your transcript for later.</p>
+        <details class="help"><summary>How this works</summary><p class="hint">Select a result to listen and fill the manual chapter time. Save review JSON to keep your transcript for later.</p></details>
         <div id="transcript-results" class="transcript-results"></div>
       </div>
     </section>
-    <section id="epub-section">
+    <section id="epub-section" data-view="detect" hidden>
       <h2>Match chapters from the EPUB</h2>
       <p id="book-status" class="hint">Upload a matching EPUB to locate its chapters in the audiobook.</p>
-      <p class="hint">The assistant searches chapter-opening phrases, widens its search for adapted passages, and checks chapter order. A later passage is a navigation clue, not a confirmed chapter boundary. Confidence labels describe evidence, not a probability.</p>
-      <div class="toolbar"><button id="align" class="primary" disabled>Find EPUB chapters</button><button id="rapid-review" disabled>Open rapid review ↗</button><button id="pause-job" hidden>Pause processing</button></div>
+      <details class="help"><summary>How matching works</summary><p class="hint">The assistant searches chapter-opening phrases, widens its search for adapted passages, and checks chapter order. A later passage is a navigation clue, not a confirmed chapter boundary. Confidence labels describe evidence, not a probability.</p></details>
+      <div class="toolbar"><button id="align" class="primary" disabled>Find EPUB chapters</button><button id="rapid-review" disabled>Open rapid review ↗</button></div>
       <p id="alignment-summary" role="status"></p>
       <div id="proposals" class="proposals"></div>
     </section>
-    <section>
-      <div class="fileline"><h2><span class="step">02</span> Review your chapters</h2><span id="count"></span></div>
-      <p class="hint">Check the markers to include. Slide each marker up to 15 seconds before or after its original position, then Preview to listen. Use the arrow keys for millisecond adjustments, or type a start time as HH:MM:SS.mmm or seconds. Sliders stop at the audio boundaries; the first chapter stays at zero. Scanning again replaces pause suggestions; saved manual and EPUB markers are kept.</p>
+    <section id="view-review" data-view="review" hidden>
+      <div class="fileline"><h2>Review your chapters</h2><span id="count"></span></div>
+      <details class="help"><summary>Review controls and shortcuts</summary><p class="hint">Check the markers to include. Slide each marker up to 15 seconds before or after its original position, then Preview to listen. Use the arrow keys for millisecond adjustments, or type a start time as HH:MM:SS.mmm or seconds. Sliders stop at the audio boundaries; the first chapter stays at zero. Scanning again replaces pause suggestions; saved manual and EPUB markers are kept.</p></details>
       <fieldset id="review">
+      <details id="manual-details"><summary>Add a chapter</summary>
       <form id="manual-form" class="manual-editor">
         <h3>Add a missing chapter</h3>
-        <p class="hint">Seek with the audio player, then use its playback position, or enter an exact time. Use “Insert after…” beside a marker to start looking in the gap after it.</p>
+        <details class="help"><summary>How this works</summary><p class="hint">Seek with the audio player, then use its playback position, or enter an exact time. Use “Insert after…” beside a marker to start looking in the gap after it.</p></details>
         <div class="manual-fields">
           <label>New chapter start<input id="manual-time" type="text" placeholder="HH:MM:SS.mmm or seconds" autocomplete="off" required></label>
           <label>Chapter title (optional)<input id="manual-title" type="text" maxlength="500" placeholder="Automatic chapter number"></label>
@@ -100,25 +121,31 @@
         </div>
         <p id="manual-status" class="hint" role="status" aria-live="polite">New markers are inserted in time order and can be adjusted with the same ±15-second sliders.</p>
       </form>
+      </details>
       <div class="toolbar">
         <button id="select">Select all</button><button id="clear">Clear optional markers</button>
         <button id="undo-remove" hidden>Undo removal</button>
         <button id="save">Save review JSON</button><label class="import">Load review JSON<input id="load" type="file" accept=".json,application/json"></label>
       </div>
-      <p class="hint">Remove deletes a marker from this review and merges its audio into the preceding chapter on export. Undo removal restores the last deleted marker. The opening marker stays at zero.</p>
+      <details class="help"><summary>Removing and restoring markers</summary><p class="hint">Remove deletes a marker from this review and merges its audio into the preceding chapter on export. Undo removal restores the last deleted marker. The opening marker stays at zero.</p></details>
       <div class="tablewrap"><table><thead><tr><th>Keep</th><th>Start</th><th>Chapter title &amp; nearby speech</th><th>Source</th><th>Actions</th></tr></thead><tbody id="rows"></tbody></table></div>
       </fieldset>
     </section>
-    <section class="export">
-      <h2><span class="step">03</span> Approve &amp; export</h2>
+    <section class="export" id="view-export" data-view="export" hidden>
+      <h2>Approve &amp; export</h2>
       <p>Write the selected chapters into a new file. The original stays untouched.</p>
       <p class="hint">Existing chapter metadata in the new file will be replaced by this selection.</p>
       <code id="output"></code>
       <label class="approval"><input id="approved" type="checkbox"> I have reviewed and approve these chapter markers and titles.</label>
       <button id="export" class="primary" disabled>Export approved chapters</button>
       <a id="download-export" href="export" hidden>Download exported audio</a>
+    </section>      <footer>Review suggestions before exporting. No account, API key, or cloud upload.</footer>
+    </div>
+    <section class="player" aria-label="Audio playback">
+      <div class="transport-copy"><strong id="transport-title">Audio preview</strong><span>Exact boundary · 10 seconds</span></div>
+      <audio id="audio" controls preload="metadata"></audio>
+      <details class="playback-help"><summary>Playback help</summary><p id="playback-help">Preview starts at the exact timestamp and plays the next 10 seconds, or until the audio ends.</p></details>
     </section>
-    <footer>Pause detection is a suggestion, not a guarantee of a chapter break. No account, API key, or cloud upload.</footer>
   </main>
 </body>
 </html>

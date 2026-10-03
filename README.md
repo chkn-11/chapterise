@@ -42,6 +42,14 @@ You can review chapters, upload files, and switch projects during background tra
 
 Tasks and completed five-minute transcription chunks live in the project workspace (`/data` in Docker). Closing the browser does not stop processing. The server/container must remain running for scheduled tasks to start. Interrupted tasks resume from completed chunks after a restart; a paused queue stays paused. The unfinished chunk is repeated when processing resumes.
 
+## UI test release
+
+The `ui-workspace-test` branch introduces a compact workspace interface. Use `ghcr.io/chkn-11/chapterise:v1.5.0-beta.1` for this fixed prerelease or `ui-test` for the newest tested build on that branch. Beta images do not update stable `latest`.
+
+[compose.test.yaml](compose.test.yaml) runs the test version on port **8766** with separate test data/model volumes. Deploy it as a separate Portainer stack to try the interface alongside your stable installation. Existing projects can be imported using review JSON and uploaded originals; stable and test instances should use separate data volumes.
+
+Desktop navigation groups projects, queue, detection, search, review and export into separate workspaces. On mobile the navigation scrolls horizontally and chapter controls stack vertically. Audio playback stays at the bottom; full filenames remain available in **Project details**. Use **Pause settings**, **How this works**, and **Add a chapter** to expand contextual controls.
+
 ## Install with Docker or Portainer
 
 Published image: **`ghcr.io/chkn-11/chapterise:v1.4`**
