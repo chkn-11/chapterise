@@ -4,6 +4,7 @@
 import argparse
 from collections import deque
 import json
+from contextlib import nullcontext
 import math
 from pathlib import Path
 import re
@@ -374,6 +375,61 @@ class Session:
             raise ValueError('The source changed; upload it again to create a new project.')
         self.load_source(source, data['output'])
 
+    def delete_project(self, identifier):
+        """Remove saved state and unshared managed uploads; preserve external files."""
+        if not self.workspace or not isinstance(identifier, str) or not re.fullmatch(r'[a-f0-9]{24}', identifier):
+            raise ValueError('Invalid project identifier.')
+        # Queue workers release this lock before taking the session lock.
+        with self.queue.lock if self.queue else nullcontext():
+            with self.lock:
+                if self.job['status'] == 'running':
+                    raise ValueError('Wait for the current operation to finish.')
+                if self.queue and any(t['project'] == identifier and t['status'] == 'running'
+                                      for t in self.queue.tasks):
+                    raise ValueError('Pause the queue and wait for this task to stop first.')
+                project = self.workspace / identifier
+                if project.is_symlink() or not project.is_dir():
+                    raise ValueError('Saved project not found.')
+                data = json.loads((project / 'project.json').read_text(encoding='utf-8'))
+                source = Path(data['source'])
+                upload = source.parent
+                owned = (upload.parent == self.workspace and upload.name.startswith('upload-')
+                         and not upload.is_symlink() and upload.is_dir())
+                if owned:
+                    for other in self.workspace.glob('*/project.json'):
+                        if other.parent == project:
+                            continue
+                        try:
+                            saved = json.loads(other.read_text(encoding='utf-8'))
+                            # A shared source or export keeps the whole upload directory.
+                            if any(Path(saved[key]).resolve().is_relative_to(upload.resolve())
+                                   for key in ('source', 'output') if saved.get(key)):
+                                owned = False
+                                break
+                        except (ValueError, OSError, KeyError, TypeError):
+                            owned = False
+                            break
+                last = self.workspace / 'last.json'
+                try:
+                    clear_last = json.loads(last.read_text()).get('id') == identifier
+                except (ValueError, OSError):
+                    clear_last = False
+                if owned:
+                    shutil.rmtree(upload)
+                shutil.rmtree(project)
+                if self.queue:
+                    self.queue.tasks = [t for t in self.queue.tasks if t['project'] != identifier]
+                    self.queue.save()
+                if clear_last:
+                    last.unlink(missing_ok=True)
+                if self.project == project:
+                    self.source = self.output = self.project = None
+                    self.info, self.rows, self.omitted_sections = {}, [], []
+                    self.duration = 0
+                    self.transcript = self.book = self.alignment = None
+                    self.notice = ''
+                    self.job = {'status': 'idle', 'progress': 0}
+
     def signature(self):
         if not self.source:
             raise ValueError('Upload an M4A or M4B file first.')
@@ -716,12 +772,18 @@ def handler_for(session, token=None, public_origin=None):
                         identifier = body.get('project')
                         if not isinstance(identifier, str) or not re.fullmatch(r'[a-f0-9]{24}', identifier):
                             raise ValueError('Invalid project identifier.')
-                        with session.lock:
+                        with session.queue.lock, session.lock:
                             data = json.loads((session.workspace / identifier / 'project.json').read_text())
-                        session.queue.add(identifier, Path(data['source']).name, body)
+                            session.queue.add(identifier, Path(data['source']).name, body)
                     else:
                         session.queue.action(action, body.get('id'))
                     self.json(session.queue.state())
+                    return
+                if route == 'api/delete-project':
+                    if body.get('confirmed') is not True:
+                        raise ValueError('Confirm project deletion first.')
+                    session.delete_project(body.get('id'))
+                    self.json({'status': 'deleted'})
                     return
                 if route == 'api/cancel':
                     session.cancelled.set()

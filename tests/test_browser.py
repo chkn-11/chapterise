@@ -370,6 +370,19 @@ class BrowserSmoke(unittest.TestCase):
                 if os.environ.get('CHAPTERISE_TEST_SCREENSHOT'):
                     screenshot = call('Page.captureScreenshot', {'format': 'png', 'captureBeyondViewport': True})
                     Path(os.environ['CHAPTERISE_TEST_SCREENSHOT']).write_bytes(base64.b64decode(screenshot['data']))
+                # Project deletion is confirmed, cancels safely, and resets the open project.
+                deleted_project = session.project
+                deleted_source = session.source
+                evaluate("showWorkspace('projects'); document.getElementById('project-list').value = state.project_id; window.confirm = text => { window.__deletePrompt = text; return false; }; document.getElementById('delete-project').click();")
+                self.assertTrue(deleted_project.exists())
+                self.assertIn('cannot be undone', evaluate('window.__deletePrompt'))
+                evaluate("window.confirm = () => true; document.getElementById('delete-project').click();")
+                until("state.project_id === null && !busy && document.getElementById('status').textContent.includes('Project files deleted')")
+                self.assertFalse(deleted_project.exists())
+                self.assertFalse(deleted_source.exists())
+                self.assertTrue(fixtures.AudioTests.source.exists())
+                self.assertEqual(evaluate('rows.length'), 0)
+                self.assertTrue(evaluate("document.getElementById('download-export').hidden"))
             finally:
                 if wire: wire.close()
                 if browser:

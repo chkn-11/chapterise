@@ -503,6 +503,24 @@ $("open-project").onclick = async () => {
   } catch (error) { message(error.message, true); }
   finally { busy = false; updateControls(); renderProposals(); }
 };
+$("delete-project").onclick = async () => {
+  const selection = $("project-list"), id = selection.value;
+  if (!id || busy) return;
+  const filename = selection.selectedOptions[0].textContent;
+  if (!window.confirm(`Delete project files for “${filename}”?\n\nThis permanently removes saved chapters, EPUB data, transcription caches and queued tasks. Uploaded audio and exports in its app upload folder are removed unless another project uses them. Files outside that folder are preserved.\n\nThis cannot be undone.`)) return;
+  try {
+    busy = true; updateControls();
+    await persistReview();
+    await api("delete-project", {id, confirmed: true});
+    if (state.project_id === id) {
+      audio.pause(); transcript = null; removedRow = null; $("approved").checked = false;
+    }
+    busy = false;
+    await init();
+    message(`Project files deleted: ${filename}`);
+  } catch (error) { message(error.message, true); }
+  finally { busy = false; updateControls(); renderProposals(); }
+};
 $("align").onclick = () => startJob("align", {model: $("speech-model").value, language: $("speech-language").value.trim().toLowerCase() || null});
 $("pause-job").onclick = async () => {
   try { await api("cancel", {}); message("Pausing at the next safe point. Completed audio chunks are saved."); }

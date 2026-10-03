@@ -46,13 +46,15 @@ Matching can refine an opening-text suggestion to an immediately preceding spoke
 
 ## Workspace interface
 
+In **Projects**, select a saved project and choose **Delete project files…** to permanently remove its saved review, EPUB text, transcripts, transcription caches and queued tasks. The confirmation also covers uploaded audio and exports in its app upload folder; shared upload folders remain until no saved project uses them. Original audio and exports outside that folder are preserved. Wait for foreground operations to finish, or pause the queue and wait for the project's running task to stop before deleting it.
+
 Use the navigation to switch between projects, transcription queue, detection, transcript search, chapter review and approved export. Audio playback stays at the bottom. On mobile, chapter controls stack vertically and navigation scrolls horizontally. Full filenames remain available in **Project details**. Expand **Pause settings**, contextual help, and **Add a chapter** when needed.
 
 The UI and matching improvements tested in `v1.5.0-beta.1` and `v1.5.0-beta.2` are included in stable **v1.5**. The `ui-workspace-test` branch and `ui-test` image remain separate from stable publishing; beta images do not update `latest`. [compose.test.yaml](compose.test.yaml) remains available for a separate test stack on port 8766 with separate data/model volumes.
 
 ## Install with Docker or Portainer
 
-Published image: **`ghcr.io/chkn-11/chapterise:v1.5`**
+Published image: **`ghcr.io/chkn-11/chapterise:v1.6`**
 
 The public image supports **Linux x86-64 (Intel/AMD)** and includes Python, FFmpeg, and CPU speech recognition. No registry login or host Python installation is needed. ARM and GPU images are not provided in this release.
 
@@ -63,7 +65,7 @@ Everything needed for deployment is in this file. No `.env`, server-IP setting, 
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.5
+    image: ghcr.io/chkn-11/chapterise:v1.6
     init: true
     restart: unless-stopped
     ports:
@@ -117,7 +119,7 @@ You can also run as a specific host user using Compose's native `user:` setting.
 ```yaml
 services:
   chapterise:
-    image: ghcr.io/chkn-11/chapterise:v1.5
+    image: ghcr.io/chkn-11/chapterise:v1.6
     user: "1000:1000" # Replace with your host user's UID:GID.
     init: true
     restart: unless-stopped
@@ -138,8 +140,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release changes and upgrade notes.
 
 | Image tag | Purpose |
 | --- | --- |
-| `v1.5` | Current release; ordinary pushes to `main` do not advance this tag. |
-| `v1.4`, `v1.3.1`, `v1.3`, `v1.2`, `v1.1`, `v1` | Previous releases, retained for existing deployments. |
+| `v1.6` | Current release; ordinary pushes to `main` do not advance this tag. |
+| `v1.5`, `v1.4`, `v1.3.1`, `v1.3`, `v1.2`, `v1.1`, `v1` | Previous releases, retained for existing deployments. |
 | `latest` | The newest successfully published build from `main`. |
 | `sha-<full-commit-id>` | A build associated with a particular source commit. |
 
@@ -443,7 +445,7 @@ The speech model cache uses the recognition library's normal local cache. Docker
 
 ## Development and release checks
 
-Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.5`.
+Build a local image with `docker compose up --build -d` using this repository's [compose.yaml](compose.yaml). It uses `chapterise:local`; published deployment files use `ghcr.io/chkn-11/chapterise:v1.6`.
 
 Run the automated tests:
 

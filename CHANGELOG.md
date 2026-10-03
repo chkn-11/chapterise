@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.6 — 2026-10-03
+
+- Add **Delete project files…** to the Projects tab with explicit confirmation.
+- Remove saved reviews, EPUB data, transcripts, caches, queued tasks and unshared managed uploads with their exports.
+- Preserve external originals and exports, and uploads referenced by other saved projects.
+- Block deletion during foreground work or an active transcription task; clear the open project after deletion.
+
+Validation: all 49 tests passed, including browser confirmation, cancellation, deletion and preservation of original audio.
+
+Upgrade: pull `ghcr.io/chkn-11/chapterise:v1.6` or `latest` and redeploy with the same data/model volumes.
+
 ## v1.5 — 2026-10-03
 
 - Promote the tested compact workspace UI, persistent audio playback, contextual controls and mobile chapter layout to stable.
