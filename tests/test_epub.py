@@ -153,6 +153,108 @@ class MatchingTests(unittest.TestCase):
         far = {'segments': [transcript_passage(self.passage, 100)]}
         self.assertEqual(match_book(book, far, existing_chapters=[{'start_time': '15'}])['proposals'][0]['start'], 100)
 
+    def test_expected_spoken_heading_precedes_prose(self):
+        book = self.book([self.passage])
+        book['chapters'][0]['title'] = '19'
+        speech = {'segments': [transcript_passage('Nineteen.', 15), transcript_passage(self.passage, 20)]}
+        p = match_book(book, speech)['proposals'][0]
+        self.assertEqual(p['start'], 15)
+        self.assertEqual(p['text_match_start'], 20)
+        self.assertEqual(p['boundary_evidence'], 'spoken_heading')
+        self.assertEqual(p['heading_start'], 15)
+        # Hyphenated and numerical headings also work inside mixed segments.
+        book['chapters'][0]['title'] = 'Chapter 21: A journey'
+        for heading in ('Twenty-one.', '21.', 'Chapter twenty-one.'):
+            speech = {'segments': [transcript_passage(heading + ' ' + self.passage, 20)]}
+            p = match_book(book, speech)['proposals'][0]
+            self.assertEqual(p['start'], 20)
+            self.assertEqual(p['boundary_evidence'], 'spoken_heading')
+
+    def test_written_number_headings_use_the_whole_number(self):
+        book = self.book([self.passage])
+        for title, heading in [('CHAPTER TWENTY-ONE', 'Twenty-one.'),
+                               ('PART TWENTY-ONE', 'Part twenty-one.'),
+                               ('CHAPTER ONE HUNDRED AND ONE', 'One hundred and one.')]:
+            book['chapters'][0]['title'] = title
+            announcement = transcript_passage(heading, 10)
+            for wi, word in enumerate(announcement['words']):
+                word.update(start=10 + wi * .3, end=10 + wi * .3 + .2)
+            announcement['end'] = announcement['words'][-1]['end']
+            speech = {'segments': [announcement, transcript_passage(self.passage, 20)]}
+            self.assertEqual(match_book(book, speech)['proposals'][0]['start'], 10)
+        book['chapters'][0]['title'] = 'Chapter 20'
+        speech = {'segments': [transcript_passage('Chapter twenty-one.', 10), transcript_passage(self.passage, 20)]}
+        self.assertEqual(match_book(book, speech)['proposals'][0]['start'], 20)
+
+    def test_heading_rejects_wrong_numbers_mentions_and_ambiguous_announcements(self):
+        book = self.book([self.passage])
+        book['chapters'][0]['title'] = '19'
+        for heading in ('Eighteen.', 'He counted nineteen.', 'There were nineteen people',
+                        'Chapter nineteen contains a lesson.',
+                        'The end of chapter nineteen.'):
+            speech = {'segments': [transcript_passage(heading, 10), transcript_passage(self.passage, 20)]}
+            self.assertEqual(match_book(book, speech)['proposals'][0]['start'], 20)
+        speech = {'segments': [transcript_passage('Nineteen.', 10), transcript_passage('Nineteen.', 15),
+                               transcript_passage(self.passage, 20)]}
+        self.assertEqual(match_book(book, speech)['proposals'][0]['start'], 20)
+        # Passage timing cannot establish a heading's word timestamp.
+        speech = {'segments': [{'start': 15, 'end': 16, 'text': 'Nineteen.'},
+                               transcript_passage(self.passage, 20)]}
+        self.assertEqual(match_book(book, speech)['proposals'][0]['start'], 20)
+        # A chapter number after an opening epigraph must not exclude that epigraph.
+        speech = {'segments': [transcript_passage(self.passage, 20), transcript_passage('Nineteen.', 45)]}
+        self.assertEqual(match_book(book, speech)['proposals'][0]['start'], 20)
+
+    def test_heading_does_not_cross_previous_chapter_or_trust_broken_word_timing(self):
+        book = self.book([self.other, self.passage])
+        book['chapters'][1]['title'] = 'Chapter 2'
+        speech = {'segments': [transcript_passage('Two.', 10), transcript_passage(self.other, 20),
+                               transcript_passage(self.passage, 50)]}
+        self.assertEqual(match_book(book, speech)['proposals'][1]['start'], 50)
+        book = self.book([self.passage])
+        book['chapters'][0]['title'] = 'Chapter 21'
+        bad = transcript_passage('Twenty one.', 15)
+        bad['words'][1]['start'] = 12
+        speech = {'segments': [bad, transcript_passage(self.passage, 20)]}
+        self.assertEqual(match_book(book, speech)['proposals'][0]['start'], 20)
+        speech = {'segments': [transcript_passage('Twenty-one.', 1), transcript_passage(self.passage, 20)]}
+        self.assertEqual(match_book(book, speech)['proposals'][0]['start'], 20)
+
+    def test_part_heading_and_source_inside_prior_narration(self):
+        book = self.book([self.passage])
+        book['chapters'][0]['title'] = 'PART FOUR'
+        speech = {'segments': [transcript_passage('The previous chapter ends here.', 1),
+                               transcript_passage('Part four.', 15), transcript_passage(self.passage, 20)]}
+        p = match_book(book, speech, existing_chapters=[{'start_time': '3'}])['proposals'][0]
+        self.assertEqual(p['start'], 15)
+        self.assertEqual(p['boundary_evidence'], 'spoken_heading')
+        speech['segments'].pop(1)
+        p = match_book(book, speech, existing_chapters=[{'start_time': '3'}])['proposals'][0]
+        self.assertEqual(p['start'], 20)
+        self.assertIn('crosses recognised narration', p['reason'])
+        intro = {'segments': [transcript_passage('Publisher introduction and dedication.', 0),
+                              transcript_passage(self.passage, 20)]}
+        self.assertEqual(match_book(book, intro, existing_chapters=[{'start_time': '0'}])['proposals'][0]['start'], 20)
+
+    def test_dense_source_map_is_corroborated_independently_of_track_labels(self):
+        book = self.book([self.passage + f' specialword{i}' for i in range(8)])
+        # Independent unique opening passages avoid common-text ambiguities.
+        for i, chapter in enumerate(book['chapters']):
+            chapter['text'] = ' '.join(f'unique{i}word{j}' for j in range(20))
+        speech = {'segments': []}
+        tracks = []
+        for i, chapter in enumerate(book['chapters']):
+            start = i * 100 + 20
+            speech['segments'].append(transcript_passage('Trailing narration from before the boundary.', start - 7))
+            speech['segments'].append(transcript_passage(chapter['text'], start))
+            tracks.append({'start_time': str(start - 5), 'tags': {'title': f'Track {i + 91}'}})
+        p = match_book(book, speech, existing_chapters=tracks)['proposals'][:8]
+        self.assertEqual([v['start'] for v in p], [i * 100 + 15 for i in range(8)])
+        self.assertTrue(all(v['boundary_evidence'] == 'source_consistent_map' for v in p))
+        # The same overlap is not enough to trust a sparse unrelated track.
+        p = match_book(book, speech, existing_chapters=tracks[:1])['proposals'][0]
+        self.assertEqual(p['start'], 20)
+
     def test_illustration_title_needs_full_heading_not_story_mention(self):
         book = self.book([''])
         book['chapters'][0]['title'] = "Shallan’s Sketchbook: Cryptics"

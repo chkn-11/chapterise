@@ -42,9 +42,11 @@ You can review chapters, upload files, and switch projects during background tra
 
 Tasks and completed five-minute transcription chunks live in the project workspace (`/data` in Docker). Closing the browser does not stop processing. The server/container must remain running for scheduled tasks to start. Interrupted tasks resume from completed chunks after a restart; a paused queue stays paused. The unfinished chunk is repeated when processing resumes.
 
+Matching can refine an opening-text suggestion to an immediately preceding spoken chapter or part number when the expected number, word timing, and chapter order agree. It retains the original prose-evidence timestamp. Sparse embedded source tracks are used only within a quiet lead-in; dense chapter maps need corroboration from many strong opening matches. Missing headings and unmatched opening words still require listening and manual boundary review. Existing accepted markers are never moved automatically when matching is rerun.
+
 ## UI test release
 
-The `ui-workspace-test` branch introduces a compact workspace interface. Use `ghcr.io/chkn-11/chapterise:v1.5.0-beta.1` for this fixed prerelease or `ui-test` for the newest tested build on that branch. Beta images do not update stable `latest`.
+The `ui-workspace-test` branch introduces a compact workspace interface. Use `ghcr.io/chkn-11/chapterise:v1.5.0-beta.2` for this fixed prerelease or `ui-test` for the newest tested build on that branch. Beta images do not update stable `latest`.
 
 [compose.test.yaml](compose.test.yaml) runs the test version on port **8766** with separate test data/model volumes. Deploy it as a separate Portainer stack to try the interface alongside your stable installation. Existing projects can be imported using review JSON and uploaded originals; stable and test instances should use separate data volumes.
 

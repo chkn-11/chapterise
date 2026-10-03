@@ -289,6 +289,90 @@ def audio_extras(book, transcript, proposals):
     return extras
 
 
+def number_words(number):
+    """Exact English heading forms; never fuzzy-match one number to another."""
+    small = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+             'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen',
+             'sixteen', 'seventeen', 'eighteen', 'nineteen']
+    tens = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety']
+    if number < 20:
+        return [small[number]]
+    if number < 100:
+        return [tens[number // 10]] + ([small[number % 10]] if number % 10 else [])
+    return [small[number // 100], 'hundred'] + (number_words(number % 100) if number % 100 else [])
+
+
+NUMBER_HEADINGS = {tuple(number_words(n)): n for n in range(1, 1000)}
+NUMBER_HEADINGS.update({tuple(number_words(n // 100 * 100) + ['and'] + number_words(n % 100)): n
+                        for n in range(100, 1000) if n % 100})
+
+
+def heading_forms(title):
+    words = tokens(title)
+    kind = words[0] if words and words[0] in ('chapter', 'part') else 'chapter'
+    target = words[1:] if words and words[0] in ('chapter', 'part') else words
+    if not target:
+        return []
+    number = int(target[0]) if target[0].isdigit() and len(target[0]) <= 3 else None
+    if number is None:
+        # Longest complete number first: "twenty-one" must not become twenty,
+        # and "one hundred" must not become one.
+        for size in range(min(6, len(target)), 0, -1):
+            number = NUMBER_HEADINGS.get(tuple(target[:size]))
+            if number is not None:
+                if words[0] not in ('chapter', 'part') and size != len(target):
+                    return []
+                break
+    if number is None or not 1 <= number <= 999:
+        return []
+    variants = [[str(number)], number_words(number)]
+    if number >= 100 and number % 100:
+        variants.append(number_words(number // 100 * 100) + ['and'] + number_words(number % 100))
+    return [[kind] + v for v in variants] + (variants if kind == 'chapter' else [])
+
+
+def speech_units(transcript):
+    units = []
+    for si, segment in enumerate(transcript.get('segments', [])):
+        for word in segment.get('words', []):
+            normalized = tokens(word['word'])
+            for wi, token in enumerate(normalized):
+                units.append({'token': token, 'start': word['start'], 'end': word['end'],
+                              'segment': si, 'stop': wi == len(normalized) - 1 and
+                              bool(re.search(r'[.!?][”\"\']?$', word['word'].strip()))})
+    return units
+
+
+def spoken_heading(forms, units, unit_index, evidence, previous):
+    """Use a nearby, isolated expected heading backed by an opening prose match."""
+    hits = []
+    indices = sorted({i for form in forms for i in unit_index.get(form[0], [])})
+    for i in indices:
+        unit = units[i]
+        if not previous < unit['start'] < evidence or evidence - unit['start'] > 15:
+            continue
+        for form in forms:
+            window = units[i:i + len(form)]
+            if [w['token'] for w in window] != form:
+                continue
+            end = window[-1]
+            # Reject broken ASR timing and distant numbers in ordinary narration.
+            if end['end'] < unit['start'] or end['end'] > evidence + .05 or end['end'] - unit['start'] > 3 or evidence - end['end'] > 12:
+                continue
+            if any(w['start'] < window[j - 1]['start'] for j, w in enumerate(window) if j):
+                continue
+            before = units[i - 1] if i else None
+            isolated = before is None or before['segment'] != unit['segment'] or before['stop'] or unit['start'] - before['end'] >= .65
+            if not isolated or (i and units[i - 1]['token'] in ('of', 'in', 'through', 'from')):
+                continue
+            if not end['stop']:
+                continue
+            hits.append(unit['start'])
+    # Multiple plausible announcements require manual review rather than guessing.
+    distinct = sorted(set(hits))
+    return distinct[0] if len(distinct) == 1 else None
+
+
 def match_book(book, transcript, progress=None, existing_chapters=None):
     """Search unique phrase anchors, tolerate omissions, then enforce book order.
 
@@ -413,21 +497,68 @@ def match_book(book, transcript, progress=None, existing_chapters=None):
         elif groups[i]:
             proposal['reason'] = 'Matches conflict with the book chapter order. Locate this chapter manually.'
         proposals.append(proposal)
-    # Existing source metadata can retain spoken headings omitted by ASR.
-    # Only use a nearby earlier boundary for an opening-text match, never infer
-    # a chapter from a track number or snap a late-passage match back blindly.
+    units = speech_units(transcript)
+    unit_index = defaultdict(list)
+    for ui, unit in enumerate(units):
+        unit_index[unit['token']].append(ui)
+    segments = transcript.get('segments', [])
     boundaries = sorted({float(c['start_time']) for c in (existing_chapters or [])})
+    # A dense source map corroborated by many independent opening matches is
+    # different evidence from a few coarse production tracks. Labels alone do
+    # not establish chapter numbers or reliability.
+    opening = [p for p in proposals if p['start'] is not None and
+               p.get('book_offset', 999) <= 12 and p.get('matched_words', 0) >= 16 and
+               p['confidence'] == 'strong']
+    corroborated = {max(t for t in boundaries if 0 <= p['start'] - t <= 30)
+                    for p in opening if any(0 <= p['start'] - t <= 30 for t in boundaries)}
+    consistent_source_map = (len(corroborated) >= 8 and
+                             len(corroborated) >= .7 * len(opening) and
+                             len(corroborated) >= .7 * len(boundaries))
     for i, proposal in enumerate(proposals):
-        start = proposal['start']
-        if start is None or proposal.get('book_offset', 999) > 12:
+        evidence = proposal['start']
+        proposal['text_confidence'] = proposal['confidence']
+        if evidence is None or proposal.get('book_offset', 999) > 12:
             continue
-        previous = max((p['start'] for p in proposals[:i] if p['start'] is not None), default=-1)
-        nearby = [t for t in boundaries if previous < t <= start and start - t <= 30]
-        if nearby and nearby[-1] < start:
-            proposal['text_match_start'] = start
-            proposal['start'] = nearby[-1]
+        previous = max((p.get('text_match_start', p['start']) for p in proposals[:i]
+                        if p['start'] is not None), default=-1)
+        heading = None
+        if proposal.get('matched_words', 0) >= 16 and proposal.get('score', 0) >= .5:
+            heading = spoken_heading(heading_forms(proposal['title']), units, unit_index, evidence, previous)
+        if heading is not None:
+            proposal.update(text_match_start=evidence, start=heading, heading_start=heading,
+                            boundary_evidence='spoken_heading')
+            proposal['reason'] += ' Expected spoken chapter or part heading immediately precedes the opening-text match; using its word timestamp. Check the leading pause by listening.'
+        start = proposal['start']
+        # Sparse tracks need a quiet lead-in; dense corroborated source maps
+        # retain boundaries even when ASR passage timing crosses a transition.
+        nearby = [t for t in boundaries if previous < t < (evidence if consistent_source_map else start)
+                  and (evidence if consistent_source_map else start) - t <= (30 if consistent_source_map or heading is None else 3)]
+        safe = []
+        for boundary in nearby:
+            if consistent_source_map:
+                safe.append(boundary)
+                continue
+            # Exclude the passage containing the opening match, allowing its
+            # unrecognised first words; all earlier passages must finish first.
+            active = next((si for si, segment in enumerate(segments)
+                           if segment['start'] <= start < segment['end']), len(segments))
+            preceding = segments[:active]
+            if any(segment['end'] > boundary + .05 for segment in preceding if segment['start'] < start):
+                continue
+            if active < len(segments) and segments[active]['start'] < boundary - .05:
+                continue
+            safe.append(boundary)
+        if safe:
+            proposal.setdefault('text_match_start', evidence)
+            proposal['start'] = safe[-1]
             proposal['confidence'] = 'review'
-            proposal['reason'] += ' Using a nearby earlier chapter boundary from the source file to include a possible spoken heading. Confirm by listening.'
+            proposal['boundary_evidence'] = 'source_consistent_map' if consistent_source_map else 'source_quiet_lead_in'
+            proposal['reason'] += (' Using a nearby source boundary from a chapter map corroborated by many independent opening matches. Confirm by listening.' if consistent_source_map else ' Using an earlier source chapter boundary within the quiet lead-in to this passage; no intervening recognised narration. Confirm by listening.')
+        elif nearby:
+            proposal['reason'] += ' Nearby source chapter metadata crosses recognised narration; retaining the speech evidence instead.'
+        if heading is None and proposal.get('book_offset', 0) > 0:
+            proposal['confidence'] = 'review'
+            proposal['reason'] += f" The first {proposal['book_offset']} opening words were not matched; the exact boundary needs review."
     proposals.extend(audio_extras(book, transcript, proposals))
-    return {'proposals': proposals, 'engine': 'phrase-alignment-v3',
+    return {'proposals': proposals, 'engine': 'phrase-alignment-v4',
             'notice': 'Confidence describes matching evidence, not a probability. GraphicAudio omissions may move the first matched passage past the chapter start.'}

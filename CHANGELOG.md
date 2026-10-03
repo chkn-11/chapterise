@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.0-beta.2 — 2026-10-03 (matching test release)
+
+- Recognise expected spoken chapter and part numbers immediately before opening prose, using word timestamps and chapter-order constraints.
+- Require a quiet lead-in for sparse source-track adjustments; retain dense source chapter maps only when many independent strong opening matches corroborate them.
+- Retain original text-evidence timestamps and confidence; flag unmatched opening words for boundary review.
+- Preserve saved review markers and section identifiers; rerun matching to generate updated suggestions using the existing transcript.
+
+Validation: all 44 regression tests passed, including browser workflows. Six local recording comparisons lost no matches. Well of Ascension improved 57 boundaries, with median absolute error across 66 reviewed sections falling from 3.75 to 0.66 seconds. Successful earlier source-map boundaries were preserved; no compared saved review boundaries worsened.
+
+Upgrade: pull `v1.5.0-beta.2` or `ui-test` and redeploy the test stack with the same test volumes. Rerun **Find EPUB chapters** to reuse the saved transcript and generate updated suggestions. Accepted markers remain unchanged; save a review JSON backup before reconsidering decisions. Stable `latest` remains on v1.4.
+
 ## v1.5.0-beta.1 — 2026-10-03 (UI test release)
 
 - Replace the long configuration page with workspace navigation for projects, transcription queue, detection, transcript search, review and export.
